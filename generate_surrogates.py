@@ -5,6 +5,8 @@ This script contains the wrapper functions to:
 """
 
 import numpy as np
+import xarray as xr
+import scipy.stats as st
 
 ## FOURIER SURROGATES
 
