@@ -1,0 +1,8 @@
+numpy>=1.21
+scipy>=1.7
+statsmodels>=0.12
+matplotlib>=3.4
+
+# Optional — required only for specific methods:
+# kramersmoyal>=0.4   # for method='lambda_km'
+# pyproj>=3.0         # for spatial.compute_distance_matrix()

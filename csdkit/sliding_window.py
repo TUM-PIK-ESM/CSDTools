@@ -1,0 +1,156 @@
+"""
+Sliding-window CSD analysis.
+
+The core operation in CSD analysis is to compute an indicator (e.g. AC1,
+variance, λ) inside a moving window that steps through the time series.
+The resulting indicator timeseries is then tested for a monotonic trend —
+a trend toward higher AC1, higher variance, or less-negative λ is evidence
+of Critical Slowing Down.
+"""
+
+import numpy as np
+from typing import Tuple
+
+from .indicators import compute_indicator, AVAILABLE_METHODS
+
+
+def sliding_window_analysis(
+    x: np.ndarray,
+    method: str = "lambda_glsar",
+    window_size: int = 100,
+    step: int = 1,
+    dt: float = 1.0,
+    local_detrend: bool = True,
+    min_valid_fraction: float = 0.8,
+    **method_kwargs,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Apply a CSD indicator in a sliding window over a time series.
+
+    The window slides from the start to the end of the series in increments
+    of ``step``.  The indicator value is assigned to the midpoint index of
+    each window.  Windows containing too many NaN values are skipped.
+
+    Parameters
+    ----------
+    x : np.ndarray, shape (n,)
+        1D time series, already globally preprocessed if desired.
+    method : str
+        CSD indicator method from :data:`~csdkit.indicators.AVAILABLE_METHODS`.
+    window_size : int
+        Number of samples per window.
+    step : int
+        Number of samples to advance between consecutive windows.
+        ``step=1`` gives the maximum-overlap (smoothest) indicator.
+        Larger values reduce computation but coarsen the output.
+    dt : float
+        Physical time step passed to the indicator function.
+    local_detrend : bool
+        Remove a linear trend *within each window* before computing the
+        indicator.  Recommended when using a global preprocessing step
+        that may leave residual slow variations.
+    min_valid_fraction : float
+        Minimum fraction of non-NaN values required in a window.
+        Windows below this threshold are assigned NaN.
+    **method_kwargs
+        Extra keyword arguments forwarded to the indicator function.
+
+    Returns
+    -------
+    indicator : np.ndarray, shape (n_windows,)
+        Indicator value for each window.  Contains NaN for skipped windows.
+    times : np.ndarray, shape (n_windows,)
+        Index of the midpoint of each window in the original array.
+
+    Raises
+    ------
+    ValueError
+        If ``window_size >= len(x)``.
+
+    Examples
+    --------
+    >>> ind, t = sliding_window_analysis(x, method='ac1', window_size=100)
+    >>> ind, t = sliding_window_analysis(x, 'lambda_acs', 150, step=5,
+    ...                                  max_lag=25)
+    """
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+
+    if method not in AVAILABLE_METHODS:
+        raise ValueError(
+            f"Unknown method '{method}'. Available: {AVAILABLE_METHODS}"
+        )
+    if window_size >= n:
+        raise ValueError(
+            f"window_size ({window_size}) must be smaller than series "
+            f"length ({n})."
+        )
+
+    starts = np.arange(0, n - window_size + 1, step)
+    indicator = np.full(len(starts), np.nan)
+    times = starts + window_size // 2  # midpoint of each window
+
+    for k, i in enumerate(starts):
+        window = x[i : i + window_size]
+        # Skip windows with too many missing values
+        if np.mean(np.isfinite(window)) < min_valid_fraction:
+            continue
+        indicator[k] = compute_indicator(
+            window, method, dt=dt, detrend=local_detrend, **method_kwargs
+        )
+
+    return indicator, times.astype(float)
+
+
+def multi_method_analysis(
+    x: np.ndarray,
+    methods: list,
+    window_size: int = 100,
+    step: int = 1,
+    dt: float = 1.0,
+    local_detrend: bool = True,
+    **method_kwargs,
+) -> dict:
+    """
+    Run multiple CSD indicator methods over the same sliding window.
+
+    Convenience wrapper that calls :func:`sliding_window_analysis` for each
+    method and returns a dictionary of results.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        1D pre-processed time series.
+    methods : list of str
+        List of method names to compute.
+    window_size : int
+        Sliding window size.
+    step : int
+        Window step size.
+    dt : float
+        Physical time step.
+    local_detrend : bool
+        Remove linear trend within each window.
+    **method_kwargs
+        Forwarded to every indicator function.
+
+    Returns
+    -------
+    dict
+        Keys are method names; values are ``(indicator, times)`` tuples as
+        returned by :func:`sliding_window_analysis`.
+
+    Examples
+    --------
+    >>> results = multi_method_analysis(
+    ...     x, ['ac1', 'variance', 'lambda_glsar'], window_size=100
+    ... )
+    >>> for name, (ind, t) in results.items():
+    ...     print(name, ind[:5])
+    """
+    return {
+        m: sliding_window_analysis(
+            x, m, window_size, step, dt, local_detrend, **method_kwargs
+        )
+        for m in methods
+    }
