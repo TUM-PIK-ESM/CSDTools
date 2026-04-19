@@ -72,7 +72,8 @@ from .indicators import AVAILABLE_METHODS, compute_indicator
 from .preprocessing import preprocess
 from .sliding_window import sliding_window_analysis
 from .significance import significance_test
-from ._utils import kendall_tau
+from ._utils import kendall_tau, strip_nans
+from .plotting import plot_analysis, plot_multi_analysis, plot_significance
 
 __version__ = "1.0.0"
 __author__ = "CSDTools contributors"
@@ -85,6 +86,9 @@ __all__ = [
     "compute_indicator",
     "significance_test",
     "sliding_window_analysis",
+    "plot_analysis",
+    "plot_multi_analysis",
+    "plot_significance",
 ]
 
 
@@ -110,6 +114,11 @@ class CSDResult:
         surrogates whose indicator trend is at least as large as observed.
         ``None`` if ``significance=False`` was passed to
         :func:`analyze_timeseries`.
+    surrogate_taus : np.ndarray or None
+        Full array of Kendall τ values from the surrogate null distribution,
+        shape (n_surrogates,).  Stored when ``significance=True`` so that
+        :func:`~csdkit.plotting.plot_significance` can render the histogram.
+        ``None`` otherwise.
     method : str
         Name of the CSD indicator method used.
     window_size : int
@@ -123,6 +132,7 @@ class CSDResult:
     kendall_tau: float
     kendall_p_value: float
     surrogate_p_value: Optional[float]
+    surrogate_taus: Optional[np.ndarray]
     method: str
     window_size: int
     detrend_method: Optional[str]
@@ -137,6 +147,7 @@ def analyze_timeseries(
     detrend_window: Optional[int] = None,
     local_detrend: bool = True,
     dt: float = 1.0,
+    exclude_nan_neighbors: bool = False,
     significance: bool = False,
     n_surrogates: int = 1000,
     **method_kwargs,
@@ -211,6 +222,18 @@ def analyze_timeseries(
     dt : float
         Physical time step in the units desired for λ (e.g., years, months).
         Does not affect AC1 or variance.
+    exclude_nan_neighbors : bool
+        Relevant when the input contains NaN values.  If ``False`` (default),
+        only the NaN positions themselves are removed and the surrounding
+        values are kept.  If ``True``, the values immediately adjacent to
+        each NaN are *also* removed.
+
+        **When to use**: set to ``True`` when ``method='ac1'`` and data gaps
+        are meaningful.  Without this option, a value just before a gap and
+        the value just after it become an apparent lag-1 pair after NaN
+        removal, even though they were not actually consecutive.  Removing
+        their neighbours prevents such pairs from contaminating the AC1
+        estimate.  The option has no effect when the input contains no NaNs.
     significance : bool
         If ``True``, generate ``n_surrogates`` Fourier phase surrogates and
         compute a one-sided p-value.  Adds computation time ∝ n_surrogates.
@@ -274,6 +297,11 @@ def analyze_timeseries(
             f"Unknown method '{method}'. Choose from: {AVAILABLE_METHODS}"
         )
 
+    # --- NaN handling (before any preprocessing) -------------------------
+    # strip_nans emits a UserWarning if NaNs are present; stacklevel=2 makes
+    # the warning point at the user's analyze_timeseries() call site.
+    x = strip_nans(x, exclude_neighbors=exclude_nan_neighbors, stacklevel=2)
+
     # --- Global preprocessing -------------------------------------------
     preprocess_kwargs = method_kwargs.pop("preprocess_kwargs", {})
     detrend_kw: dict = {}
@@ -296,8 +324,9 @@ def analyze_timeseries(
 
     # --- Significance (optional) ----------------------------------------
     surr_p: Optional[float] = None
+    surr_taus: Optional[np.ndarray] = None
     if significance:
-        _, surr_p, _ = significance_test(
+        _, surr_p, surr_taus = significance_test(
             x_proc,
             method,
             window_size,
@@ -314,6 +343,7 @@ def analyze_timeseries(
         kendall_tau=float(tau),
         kendall_p_value=float(kp),
         surrogate_p_value=surr_p,
+        surrogate_taus=surr_taus,
         method=method,
         window_size=window_size,
         detrend_method=detrend,

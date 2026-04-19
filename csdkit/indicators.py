@@ -39,12 +39,62 @@ from ._utils import remove_linear_trend
 
 
 # ---------------------------------------------------------------------------
+# Per-method window-size recommendations
+# ---------------------------------------------------------------------------
+
+#: Minimum window size (samples) below which a UserWarning is issued.
+#: These are practical thresholds based on statistical reliability, not hard
+#: limits — the functions will still attempt a computation below them.
+RECOMMENDED_MIN_WINDOW: dict = {
+    "ac1":          30,   # need ~30 lag-1 pairs for a stable correlation
+    "variance":     20,   # variance estimate needs a few dozen samples
+    "lambda_glsar": 50,   # GLS iteration needs enough data to converge
+    "lambda_ols":   30,   # Yule-Walker estimator stabilises around 30
+    "lambda_acs":   50,   # ACF must be estimated reliably at multiple lags
+    "lambda_psd":   30,   # periodogram needs adequate frequency resolution
+    "lambda_km":    100,  # non-parametric KM needs many samples; 200+ ideal
+    "rosa":         30,   # spectral ratio needs adequate frequency resolution
+}
+
+#: Human-readable explanation of why each method needs a minimum window.
+_MIN_WINDOW_REASON: dict = {
+    "ac1":
+        "AC1 is estimated from lag-1 pairs; fewer than ~30 samples yields "
+        "an unreliable Pearson correlation.",
+    "variance":
+        "The sample variance has high relative uncertainty below ~20 samples.",
+    "lambda_glsar":
+        "GLSAR iterative fitting may not converge reliably below ~50 samples.",
+    "lambda_ols":
+        "The Yule-Walker AR(1) estimate stabilises around ~30 samples.",
+    "lambda_acs":
+        "Fitting the autocorrelation structure requires reliable ACF estimates "
+        "at multiple lags; ~50 samples is the practical minimum.",
+    "lambda_psd":
+        "The periodogram has poor frequency resolution below ~30 samples, "
+        "making spectral fitting unreliable.",
+    "lambda_km":
+        "Non-parametric Kramers-Moyal estimation requires kernel density "
+        "estimation; ~200 samples is strongly recommended, 100 is the minimum.",
+    "rosa":
+        "The spectral ratio method needs adequate frequency resolution "
+        "in both bands; ~30 samples is the practical minimum.",
+}
+
+
+# ---------------------------------------------------------------------------
 # Internal helper
 # ---------------------------------------------------------------------------
 
 def _prep(x: np.ndarray, detrend: bool = True) -> np.ndarray:
-    """Convert to float, optionally remove linear trend, return copy."""
+    """Convert to float, strip any residual NaNs, optionally detrend."""
     x = np.asarray(x, dtype=float).copy()
+    # Safety strip: upstream should have removed NaNs, but guard anyway
+    finite = np.isfinite(x)
+    if not finite.all():
+        x = x[finite]
+    if len(x) == 0:
+        return x
     if detrend:
         x = remove_linear_trend(x)
     return x
@@ -70,7 +120,11 @@ def estimate_ac1(
     Parameters
     ----------
     x : array-like, shape (n,)
-        Pre-processed time series window.
+        Pre-processed time series window.  NaN values are stripped by
+        :func:`compute_indicator` before this function is called.
+        Pass ``exclude_nan_neighbors=True`` to :func:`compute_indicator`
+        (or to :func:`~csdkit.analyze_timeseries`) to also remove values
+        that were adjacent to NaN positions in the original series.
     dt : float
         Time step (not used by this estimator; present for API consistency).
     detrend : bool
@@ -79,7 +133,7 @@ def estimate_ac1(
     Returns
     -------
     float
-        Pearson correlation coefficient between x[:-1] and x[1:].
+        Pearson correlation coefficient between lag-0 and lag-1 values.
     """
     x = _prep(x, detrend)
     if len(x) < 4:
@@ -532,25 +586,44 @@ def compute_indicator(
     method: str,
     dt: float = 1.0,
     detrend: bool = True,
+    exclude_nan_neighbors: bool = False,
     **kwargs,
 ) -> float:
     """
     Compute a single CSD indicator value on a 1D array.
 
-    Convenience wrapper around the individual estimator functions.
+    This is the unified entry point for all eight indicator methods.
+    NaN handling (including optional neighbour exclusion) is performed here,
+    so individual estimator functions always receive clean arrays.
 
     Parameters
     ----------
     x : array-like
-        1D time series or pre-extracted window.
+        1D time series or pre-extracted window.  May contain NaN values;
+        they are removed before the estimator is called.
     method : str
         One of :data:`AVAILABLE_METHODS`.
     dt : float
         Physical time step.
     detrend : bool
         Remove linear trend within x before computing.
+    exclude_nan_neighbors : bool
+        If ``True``, also remove the values immediately adjacent to each NaN
+        position before calling the estimator.  Applies to **all** methods.
+
+        This matters most for ``'ac1'``, where a pair (x[t], x[t+1]) that
+        straddles a data gap would otherwise appear as a valid lag-1 pair
+        after plain NaN removal.  For spectral and regression methods it
+        removes a small number of additional samples near gap edges, which
+        can slightly improve stationarity within the window.
+
+        When using :func:`~csdkit.analyze_timeseries`, NaN neighbours are
+        already removed from the full series before windowing, so this
+        parameter is only meaningful for direct calls to ``compute_indicator``
+        or :func:`~csdkit.sliding_window.sliding_window_analysis` on data
+        that still contains NaNs.
     **kwargs
-        Additional arguments forwarded to the specific estimator.
+        Additional arguments forwarded to the specific estimator function.
 
     Returns
     -------
@@ -561,10 +634,24 @@ def compute_indicator(
     --------
     >>> val = compute_indicator(window, 'lambda_glsar', dt=1.0)
     >>> val = compute_indicator(window, 'lambda_acs', dt=1.0, max_lag=30)
+    >>> val = compute_indicator(window_with_nans, 'ac1',
+    ...                         exclude_nan_neighbors=True)
     """
     if method not in INDICATOR_REGISTRY:
         raise ValueError(
             f"Unknown method '{method}'. Available: {AVAILABLE_METHODS}"
         )
+
+    x = np.asarray(x, dtype=float)
+    nan_mask = ~np.isfinite(x)
+    if nan_mask.any():
+        valid = ~nan_mask
+        if exclude_nan_neighbors:
+            nb = np.zeros(len(x), dtype=bool)
+            nb[:-1] |= nan_mask[1:]   # left neighbour of a NaN
+            nb[1:]  |= nan_mask[:-1]  # right neighbour of a NaN
+            valid &= ~nb
+        x = x[valid]
+
     func, _ = INDICATOR_REGISTRY[method]
     return func(x, dt=dt, detrend=detrend, **kwargs)

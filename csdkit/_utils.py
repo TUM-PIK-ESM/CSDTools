@@ -2,6 +2,7 @@
 Internal utility functions shared across csdkit modules.
 """
 
+import warnings
 import numpy as np
 from typing import Tuple
 
@@ -53,6 +54,70 @@ def running_mean(x: np.ndarray, window: int) -> np.ndarray:
     padded = np.pad(x, (half, remainder), mode="edge")
     kernel = np.ones(window) / window
     return np.convolve(padded, kernel, mode="valid")[: len(x)]
+
+
+def strip_nans(
+    x: np.ndarray,
+    exclude_neighbors: bool = False,
+    stacklevel: int = 3,
+) -> np.ndarray:
+    """
+    Remove NaN values from a 1D array and emit a warning if any are found.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Input array, may contain NaN / ±inf.
+    exclude_neighbors : bool
+        If True, also remove the values immediately *adjacent* to each NaN
+        position in the original array.  This is relevant for AC1, where a
+        pair (x[t], x[t+1]) that straddles a gap would otherwise appear as a
+        valid lag-1 pair after NaN removal.
+    stacklevel : int
+        Passed to ``warnings.warn`` so the warning points at the user's call
+        site rather than this internal function.
+
+    Returns
+    -------
+    np.ndarray
+        A copy of x with NaN (and, optionally, neighbouring) values removed.
+        Returns the original array unchanged if no NaNs are present.
+    """
+    x = np.asarray(x, dtype=float)
+    nan_mask = ~np.isfinite(x)
+    n_nans = int(nan_mask.sum())
+
+    if n_nans == 0:
+        return x.copy()
+
+    valid = ~nan_mask
+
+    if exclude_neighbors:
+        # Mark values that form a lag-1 pair with a NaN (left or right)
+        neighbor_invalid = np.zeros(len(x), dtype=bool)
+        neighbor_invalid[:-1] |= nan_mask[1:]   # x[t] where x[t+1] is NaN
+        neighbor_invalid[1:]  |= nan_mask[:-1]  # x[t] where x[t-1] is NaN
+        valid &= ~neighbor_invalid
+
+    n_removed = int((~valid).sum())
+    n_neighbor = n_removed - n_nans
+
+    neighbor_msg = (
+        f"  Additionally, {n_neighbor} neighboring value(s) have been "
+        "excluded to avoid lag-1 pairs that straddle a gap."
+        if n_neighbor > 0
+        else ""
+    )
+    warnings.warn(
+        f"Input time series contains {n_nans} NaN/Inf value(s) "
+        f"({100.0 * n_nans / len(x):.1f}% of {len(x)} samples). "
+        f"{n_removed} value(s) will be removed and the remaining "
+        "values treated as consecutive for analysis." + neighbor_msg,
+        UserWarning,
+        stacklevel=stacklevel,
+    )
+
+    return x[valid]
 
 
 def kendall_tau(x: np.ndarray) -> Tuple[float, float]:

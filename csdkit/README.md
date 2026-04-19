@@ -27,8 +27,9 @@ repository into a single, consistent API.
 6. [Full API Reference](#6-full-api-reference)
 7. [Preprocessing Guide](#7-preprocessing-guide)
 8. [Significance Testing](#8-significance-testing)
-9. [Examples](#9-examples)
-10. [References](#10-references)
+9. [Plotting](#9-plotting)
+10. [Examples](#10-examples)
+11. [References](#11-references)
 
 ---
 
@@ -537,7 +538,136 @@ The surrogate p-value is the **fraction of surrogates** whose Kendall τ is
 
 ---
 
-## 9. Examples
+## 9. Plotting
+
+The `csdkit.plotting` module (also importable directly from `csdkit`)
+provides three ready-made figure layouts.
+
+---
+
+### `plot_analysis` — single indicator
+
+Two-panel figure: the raw time series in the top panel and the chosen CSD
+indicator below it.  A dashed linear trend line and a stats box showing
+Kendall τ and p-values are overlaid on the indicator panel by default.
+
+```python
+from csdkit import analyze_timeseries, plot_analysis
+
+result = analyze_timeseries(x, method='lambda_glsar', window_size=100,
+                            significance=True, n_surrogates=1000)
+
+fig, axes = plot_analysis(
+    x,
+    result,
+    time_axis=years,       # optional physical time axis (e.g. np.arange(1850, 2020))
+    x_label='Year',
+    ts_label='AMOC index',
+    title='AMOC resilience — λ (GLSAR)',
+    show_trend=True,       # dashed OLS trend line on indicator
+    show_significance=True # Kendall τ / p-value annotation box
+)
+plt.show()
+```
+
+**Customisation**:
+
+| Parameter | What it controls |
+|-----------|-----------------|
+| `ts_color` | Time series line colour |
+| `indicator_color` | Indicator line colour |
+| `stats_loc` | Box position: `'upper left'` / `'upper right'` / `'lower left'` / `'lower right'` |
+| `ts_kwargs` / `indicator_kwargs` | Any extra `ax.plot` keyword arguments |
+| `height_ratios` | Relative heights of the two panels |
+
+---
+
+### `plot_multi_analysis` — multiple indicators stacked
+
+One panel per indicator, all sharing the same x-axis, with the raw time
+series at the top.  Each method gets a distinct colour from the built-in
+palette.
+
+```python
+from csdkit import analyze_timeseries, plot_multi_analysis
+
+methods = ['ac1', 'variance', 'lambda_glsar', 'lambda_ols', 'rosa']
+results = {m: analyze_timeseries(x, method=m, window_size=100)
+           for m in methods}
+
+fig, axes = plot_multi_analysis(
+    x,
+    results,             # dict {label: CSDResult}  or  list of CSDResult
+    time_axis=years,
+    x_label='Year',
+    title='Multi-method CSD comparison',
+)
+plt.show()
+```
+
+The `results` argument can also be a plain **list** of `CSDResult` objects,
+in which case the method names are used as panel labels automatically.
+
+---
+
+### `plot_significance` — surrogate null distribution
+
+Histogram of the Fourier surrogate Kendall τ null distribution with the
+observed τ marked as a vertical line.  The rejection region (surrogates with
+τ ≥ observed) is shaded.
+
+Requires `significance=True` in `analyze_timeseries` so the surrogate array
+is stored in `result.surrogate_taus`.
+
+```python
+result = analyze_timeseries(x, method='ac1', window_size=100,
+                            significance=True, n_surrogates=1000)
+
+fig, ax = plot_significance(result)
+plt.show()
+```
+
+---
+
+### `plot_indicator_on_ax` — embed in a custom layout
+
+Draw a single indicator panel onto an existing `matplotlib` axes object.
+Useful when building larger custom figures.
+
+```python
+import matplotlib.pyplot as plt
+from csdkit.plotting import plot_indicator_on_ax
+
+fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
+plot_indicator_on_ax(axes[0], result_ac1, time_axis=years)
+plot_indicator_on_ax(axes[1], result_var,  time_axis=years)
+plot_indicator_on_ax(axes[2], result_glsar, time_axis=years)
+plt.tight_layout()
+```
+
+---
+
+### Method colour palette
+
+Each method has a consistent default colour across all plot types:
+
+| Method | Colour |
+|--------|--------|
+| `ac1` | Blue |
+| `variance` | Green |
+| `lambda_glsar` | Red |
+| `lambda_ols` | Orange |
+| `lambda_acs` | Purple |
+| `lambda_psd` | Teal |
+| `lambda_km` | Brown |
+| `rosa` | Pink |
+
+Override any colour via the `indicator_color` parameter or the
+`csdkit.plotting.METHOD_COLORS` dictionary.
+
+---
+
+## 11. Examples
 
 Example scripts are in `csdkit/examples/`:
 
@@ -555,7 +685,7 @@ python -m csdkit.examples.significance_testing
 
 ---
 
-## 10. References
+## 12. References
 
 Clarke, J., Huntingford, C., Ritchie, P., & Cox, P. (2023).
 Seeking more robust early warning signals for climate tipping points:

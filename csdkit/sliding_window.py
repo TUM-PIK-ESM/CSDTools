@@ -8,10 +8,11 @@ a trend toward higher AC1, higher variance, or less-negative λ is evidence
 of Critical Slowing Down.
 """
 
+import warnings
 import numpy as np
 from typing import Tuple
 
-from .indicators import compute_indicator, AVAILABLE_METHODS
+from .indicators import compute_indicator, AVAILABLE_METHODS, RECOMMENDED_MIN_WINDOW, _MIN_WINDOW_REASON
 
 
 def sliding_window_analysis(
@@ -53,7 +54,10 @@ def sliding_window_analysis(
         Minimum fraction of non-NaN values required in a window.
         Windows below this threshold are assigned NaN.
     **method_kwargs
-        Extra keyword arguments forwarded to the indicator function.
+        Extra keyword arguments forwarded to :func:`~csdkit.indicators.compute_indicator`
+        and then to the specific estimator function.  Pass
+        ``exclude_nan_neighbors=True`` here to apply NaN-neighbour exclusion
+        for every window, for any method.
 
     Returns
     -------
@@ -84,6 +88,18 @@ def sliding_window_analysis(
         raise ValueError(
             f"window_size ({window_size}) must be smaller than series "
             f"length ({n})."
+        )
+
+    # Warn once before the loop if the window is likely too short
+    rec_min = RECOMMENDED_MIN_WINDOW.get(method, 0)
+    if window_size < rec_min:
+        reason = _MIN_WINDOW_REASON.get(method, "")
+        warnings.warn(
+            f"window_size={window_size} is below the recommended minimum of "
+            f"{rec_min} samples for method='{method}'. Results may be "
+            f"unreliable or dominated by noise. {reason}",
+            UserWarning,
+            stacklevel=2,
         )
 
     starts = np.arange(0, n - window_size + 1, step)
