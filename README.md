@@ -2,8 +2,7 @@
 
 A unified Python toolkit for detecting loss of resilience in dynamical systems
 using **Critical Slowing Down (CSD)** theory.  The package consolidates
-several methods that were previously scattered across different files in this
-repository into a single, consistent API.
+several methods into a single, consistent API.
 
 ---
 
