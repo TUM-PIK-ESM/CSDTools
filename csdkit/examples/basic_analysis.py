@@ -6,6 +6,7 @@ Demonstrates how to:
 2. Run the analysis with several methods.
 3. Inspect the Kendall τ trend.
 4. Test statistical significance via Fourier surrogates.
+5. Visualise results with the csdkit plotting utilities.
 
 Run from the repository root::
 
@@ -14,6 +15,8 @@ Run from the repository root::
 
 import numpy as np
 import matplotlib.pyplot as plt
+
+from csdkit import analyze_timeseries, plot_analysis, plot_multi_analysis, plot_significance
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. Generate synthetic data
@@ -35,8 +38,6 @@ for t in range(1, T):
 # ──────────────────────────────────────────────────────────────────────────────
 # 2. Run the analysis pipeline with different methods
 # ──────────────────────────────────────────────────────────────────────────────
-from csdkit import analyze_timeseries
-
 methods = ["ac1", "variance", "lambda_glsar", "lambda_ols", "lambda_psd", "rosa"]
 results = {}
 
@@ -48,7 +49,7 @@ for m in methods:
     r = analyze_timeseries(
         x,
         method=m,
-        window_size=200,   # 200-sample sliding window
+        window_size=200,
         detrend="running_mean",
         detrend_window=400,
         local_detrend=True,
@@ -59,7 +60,7 @@ for m in methods:
 print("=" * 60)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3. Significance test for the best method
+# 3. Significance test for lambda_glsar
 # ──────────────────────────────────────────────────────────────────────────────
 print("\nRunning surrogate significance test for 'lambda_glsar' …")
 
@@ -70,29 +71,47 @@ r_sig = analyze_timeseries(
     detrend="running_mean",
     detrend_window=400,
     significance=True,
-    n_surrogates=500,
+    n_surrogates=50,
 )
 
 print(f"  Observed Kendall τ : {r_sig.kendall_tau:+.3f}")
 print(f"  Surrogate p-value  : {r_sig.surrogate_p_value:.4f}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 4. Plot
+# 4a. Single-method plot: time series + lambda_glsar indicator
 # ──────────────────────────────────────────────────────────────────────────────
-fig, axes = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
+fig1, axes1 = plot_analysis(
+    x,
+    r_sig,
+    x_label="Sample index",
+    ts_label="x(t)",
+    title="CSD simulation — λ (GLSAR) with significance",
+    show_trend=True,
+    show_significance=True,
+)
+fig1.savefig("csd_basic_single.png", dpi=150)
+print("\nFigure saved to csd_basic_single.png")
 
-axes[0].plot(x, lw=0.7, color="steelblue")
-axes[0].set_ylabel("x(t)")
-axes[0].set_title("Synthetic time series with increasing φ (CSD simulation)")
+# ──────────────────────────────────────────────────────────────────────────────
+# 4b. Multi-method plot: time series + all six indicators stacked
+# ──────────────────────────────────────────────────────────────────────────────
+fig2, axes2 = plot_multi_analysis(
+    x,
+    results,
+    x_label="Sample index",
+    ts_label="x(t)",
+    title="CSD simulation — all methods compared",
+    show_trend=True,
+    show_significance=True,
+)
+fig2.savefig("csd_basic_multi.png", dpi=150)
+print("Figure saved to csd_basic_multi.png")
 
-for ax, m in zip(axes[1:], ["ac1", "variance", "lambda_glsar"]):
-    r = results[m]
-    ax.plot(r.times, r.indicator, lw=1.0, color="darkorange")
-    ax.set_ylabel(m)
-    ax.set_title(f"{m}  (τ = {r.kendall_tau:+.3f})")
+# ──────────────────────────────────────────────────────────────────────────────
+# 4c. Significance plot: surrogate null distribution for lambda_glsar
+# ──────────────────────────────────────────────────────────────────────────────
+fig3, ax3 = plot_significance(r_sig)
+fig3.savefig("csd_basic_significance.png", dpi=150)
+print("Figure saved to csd_basic_significance.png")
 
-axes[-1].set_xlabel("Time index")
-plt.tight_layout()
-plt.savefig("csd_basic_example.png", dpi=150)
-print("\nFigure saved to csd_basic_example.png")
 plt.show()

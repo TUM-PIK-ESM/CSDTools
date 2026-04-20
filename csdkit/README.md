@@ -23,7 +23,15 @@ repository into a single, consistent API.
    - [Spatial Correlation](#spatial-correlation)
    - [Empirical Recovery Rate](#empirical-recovery-rate)
 4. [Installation](#4-installation)
-5. [Quick Start](#5-quick-start)
+5. [Workflow](#5-workflow)
+   - [Step 1 — Load your data](#step-1--load-your-data)
+   - [Step 2 — Choose a preprocessing method](#step-2--choose-a-preprocessing-method)
+   - [Step 3 — Choose an indicator method](#step-3--choose-an-indicator-method)
+   - [Step 4 — Run the analysis](#step-4--run-the-analysis)
+   - [Step 5 — Visualise the results](#step-5--visualise-the-results)
+   - [Step 6 — Assess statistical significance](#step-6--assess-statistical-significance)
+   - [Step 7 — Compare multiple methods](#step-7--compare-multiple-methods)
+   - [Handling missing data (NaNs)](#handling-missing-data-nans)
 6. [Full API Reference](#6-full-api-reference)
 7. [Preprocessing Guide](#7-preprocessing-guide)
 8. [Significance Testing](#8-significance-testing)
@@ -319,66 +327,281 @@ for r in results:
 
 ## 4. Installation
 
-Clone this repository and install the dependencies:
+Clone the repository and install csdkit as an editable package:
 
 ```bash
-pip install numpy scipy statsmodels matplotlib
+git clone <repo-url>
+cd CSDTools
+pip install -e .
 ```
 
-Optional (for specific methods):
+This installs all required dependencies (`numpy`, `scipy`, `statsmodels`,
+`matplotlib`) automatically.  The `-e` flag means edits to the source are
+reflected immediately without reinstalling.
+
+Optional extras for specific methods:
 
 ```bash
-pip install kramersmoyal   # required for method='lambda_km'
-pip install pyproj         # required for spatial.compute_distance_matrix()
+pip install -e ".[km]"       # adds kramersmoyal  (method='lambda_km')
+pip install -e ".[spatial]"  # adds pyproj        (spatial.compute_distance_matrix)
+pip install -e ".[km,spatial]"  # both
 ```
 
-No additional installation step is required for csdkit itself — import it
-directly from the repository root or add the parent directory to your
-`PYTHONPATH`:
+After installation, `import csdkit` works from any directory.
 
-```bash
-export PYTHONPATH="/path/to/CSDTools:$PYTHONPATH"
+---
+
+## 5. Workflow
+
+This section walks through a complete analysis from raw data to publication-ready
+figures.  Each step corresponds to a function in csdkit.
+
+### Step 1 — Load your data
+
+csdkit works with any 1-D NumPy array of evenly-sampled observations.  Load
+your data however is most convenient and convert it to an array:
+
+```python
+import numpy as np
+
+# From a text file
+x = np.loadtxt("my_data.csv", delimiter=",")
+
+# From a NetCDF file via xarray
+import xarray as xr
+ds = xr.open_dataset("my_data.nc")
+x = ds["variable"].values   # shape (T,)
+
+# Or generate synthetic data for testing
+rng = np.random.default_rng(42)
+T = 1000
+phi = np.linspace(0.3, 0.95, T)
+x = np.zeros(T)
+for t in range(1, T):
+    x[t] = phi[t] * x[t - 1] + 0.3 * rng.standard_normal()
+```
+
+**Missing values**: NaN and Inf values are stripped automatically.  A warning
+is emitted with the count and percentage removed.  See
+[Handling missing data](#handling-missing-data-nans) below.
+
+---
+
+### Step 2 — Choose a preprocessing method
+
+Raw observations typically contain a slow trend (seasonal cycle, long-term
+mean drift) that must be removed before computing CSD indicators.  Pass the
+`detrend` and `detrend_window` arguments to `analyze_timeseries`:
+
+| `detrend=` | Description | Typical use |
+|---|---|---|
+| `'running_mean'` | Subtract a centred running mean | Default; handles smooth trends |
+| `'linear'` | Remove a global linear regression | When trend is approximately linear |
+| `'quadratic'` | Remove a global quadratic polynomial | Slow nonlinear drift |
+| `'stl'` | STL seasonal decomposition | Seasonal data (requires `period`) |
+| `'harmonic'` | Remove fitted sine/cosine harmonics | Known seasonal frequency |
+
+The `detrend_window` controls the bandwidth of the running mean (in samples).
+A common rule of thumb: set it to roughly half the length of the series, or
+to the dominant cycle length if a periodic signal is present.
+
+```python
+# Remove a running mean with a 400-sample bandwidth
+result = analyze_timeseries(x, method='lambda_glsar',
+                            detrend='running_mean', detrend_window=400)
+```
+
+Set `local_detrend=True` to additionally remove a linear trend *within each
+sliding window* (reduces spurious trends in the indicator time series for
+highly non-stationary data).
+
+---
+
+### Step 3 — Choose an indicator method
+
+| `method=` | What it measures | When to use |
+|---|---|---|
+| `'ac1'` | Lag-1 autocorrelation | Quick first look; widely cited |
+| `'variance'` | Window variance | Complementary to AC1 |
+| `'lambda_glsar'` | Restoring rate via GLS | **Recommended default** |
+| `'lambda_ols'` | Restoring rate via Yule-Walker | Faster alternative to GLSAR |
+| `'lambda_acs'` | Restoring rate via ACF fit | Robust with multiple lags |
+| `'lambda_psd'` | Restoring rate via PSD fit | Uses full spectral information |
+| `'lambda_km'` | Restoring rate via Kramers-Moyal | Non-parametric; needs ≥ 200 pts/window |
+| `'rosa'` | Ratio of spectral bands | Robust to some non-stationarities |
+
+Start with `lambda_glsar` unless you have a specific reason to prefer another.
+Use multiple methods together (Step 7) to assess robustness.
+
+---
+
+### Step 4 — Run the analysis
+
+```python
+from csdkit import analyze_timeseries
+
+result = analyze_timeseries(
+    x,
+    method        = 'lambda_glsar',   # indicator method
+    window_size   = 200,               # samples per sliding window
+    step          = 1,                 # window step (1 = maximum overlap)
+    detrend       = 'running_mean',    # global detrending method
+    detrend_window= 400,               # running-mean bandwidth (samples)
+    local_detrend = True,              # also detrend within each window
+    dt            = 1.0,               # sampling interval (any consistent unit)
+    significance  = False,             # set True to compute surrogate p-value
+)
+
+print(f"Kendall τ  = {result.kendall_tau:+.3f}")
+print(f"Kendall p  = {result.kendall_p_value:.4f}")
+```
+
+The returned `CSDResult` object contains:
+
+| Attribute | Description |
+|---|---|
+| `result.indicator` | Array of indicator values, one per window |
+| `result.times` | Array of window-centre indices |
+| `result.kendall_tau` | Kendall τ trend of the indicator |
+| `result.kendall_p_value` | Kendall p-value (Mann-Kendall test) |
+| `result.surrogate_p_value` | Surrogate p-value (`None` if `significance=False`) |
+| `result.surrogate_taus` | Array of surrogate τ values (`None` if not run) |
+| `result.method` | Method name string |
+| `result.window_size` | Window size used |
+| `result.detrend_method` | Detrending method name |
+
+**Window-size guidance**: A warning is emitted automatically if `window_size`
+is below the recommended minimum for the chosen method (e.g., 30 for GLSAR,
+200 for Kramers-Moyal).
+
+---
+
+### Step 5 — Visualise the results
+
+```python
+from csdkit import plot_analysis
+
+fig, axes = plot_analysis(
+    x,
+    result,
+    title          = "My CSD analysis",
+    show_trend     = True,        # overlay Theil-Sen trend line
+    show_significance = True,     # annotate τ and p-value on plot
+)
+fig.savefig("csd_result.png", dpi=150)
+```
+
+`plot_analysis` returns a `(fig, axes)` pair where `axes[0]` is the time
+series panel and `axes[1]` is the indicator panel — you can customise them
+further with standard matplotlib calls after the function returns.
+
+Pass a `time_axis` array to label the x-axis with real dates or physical
+units instead of sample indices:
+
+```python
+import pandas as pd
+times = pd.date_range("1990-01", periods=len(x), freq="ME")
+fig, axes = plot_analysis(x, result, time_axis=times.to_numpy())
 ```
 
 ---
 
-## 5. Quick Start
+### Step 6 — Assess statistical significance
+
+Surrogate significance testing asks: "Could this Kendall τ arise by chance
+from a stationary process with the same power spectrum?"
+
+```python
+result = analyze_timeseries(
+    x,
+    method       = 'lambda_glsar',
+    window_size  = 200,
+    detrend      = 'running_mean',
+    detrend_window = 400,
+    significance = True,          # enable surrogate test
+    n_surrogates = 500,           # 500 is a good default (1000 for publication)
+)
+
+print(f"Surrogate p-value = {result.surrogate_p_value:.4f}")
+# p < 0.05 → significant trend unlikely to arise from a stationary process
+```
+
+Visualise the null distribution:
+
+```python
+from csdkit import plot_significance
+
+fig, ax = plot_significance(result)
+fig.savefig("null_dist.png", dpi=150)
+```
+
+The plot shows a histogram of surrogate Kendall τ values with the observed τ
+marked and the 5 % rejection region shaded in red.
+
+---
+
+### Step 7 — Compare multiple methods
+
+Robustness across methods strengthens the evidence for CSD:
+
+```python
+from csdkit import analyze_timeseries, plot_multi_analysis
+
+methods = ['ac1', 'variance', 'lambda_glsar', 'lambda_ols', 'lambda_psd']
+
+results = {
+    m: analyze_timeseries(
+        x, method=m,
+        window_size=200,
+        detrend='running_mean', detrend_window=400,
+    )
+    for m in methods
+}
+
+fig, axes = plot_multi_analysis(
+    x, results,
+    title      = "Multi-method CSD comparison",
+    show_trend = True,
+)
+fig.savefig("csd_multi.png", dpi=150)
+```
+
+Each indicator is plotted in its own colour-coded panel below the original
+time series, with a Theil-Sen trend line overlay and τ annotation.
+
+---
+
+### Handling missing data (NaNs)
+
+By default, NaN and Inf values are silently removed and the remaining samples
+are treated as a contiguous sequence:
 
 ```python
 import numpy as np
-from csdkit import analyze_timeseries
+x_with_nans = x.copy()
+x_with_nans[200:210] = np.nan   # introduce a gap
 
-# --- Generate a synthetic CSD time series ---
-rng = np.random.default_rng(0)
-T = 1000
-phi = np.linspace(0.3, 0.95, T)   # increasing φ → CSD
-x = np.zeros(T)
-for t in range(1, T):
-    x[t] = phi[t] * x[t - 1] + 0.3 * rng.standard_normal()
+result = analyze_timeseries(x_with_nans, method='lambda_glsar', window_size=200)
+# UserWarning: Input time series contains 10 NaN/Inf value(s) (1.0 % of 1000).
+#              They have been removed; remaining samples are treated as consecutive.
+```
 
-# --- Run the analysis ---
+**Excluding NaN neighbours**: In some datasets a few corrupted samples
+(telemetry dropout, sensor glitch) can distort lag-1 autocorrelations because
+the samples immediately before and after the gap are now artificially
+adjacent.  Pass `exclude_nan_neighbors=True` to also remove those neighbours:
+
+```python
 result = analyze_timeseries(
-    x,
-    method='lambda_glsar',   # restoring rate via GLSAR
-    window_size=200,          # 200-sample sliding window
-    detrend='running_mean',   # subtract running mean first
-    local_detrend=True,       # also detrend within each window
-    significance=True,        # compute p-value via surrogates
-    n_surrogates=500,
+    x_with_nans,
+    method               = 'lambda_glsar',
+    window_size          = 200,
+    exclude_nan_neighbors= True,   # also removes x[199] and x[210]
 )
-
-print(f"Kendall τ       = {result.kendall_tau:+.3f}")
-print(f"Kendall p-value = {result.kendall_p_value:.4f}")
-print(f"Surrogate p     = {result.surrogate_p_value:.4f}")
 ```
 
-**Expected output** (approximate):
-
-```
-Kendall τ       = +0.712
-Kendall p-value = 0.0000
-Surrogate p     = 0.0020
-```
+This is applied at the window level inside `compute_indicator` and is safe to
+combine with all methods.
 
 ---
 
@@ -667,7 +890,7 @@ Override any colour via the `indicator_color` parameter or the
 
 ---
 
-## 11. Examples
+## 10. Examples
 
 Example scripts are in `csdkit/examples/`:
 
@@ -685,7 +908,7 @@ python -m csdkit.examples.significance_testing
 
 ---
 
-## 12. References
+## 11. References
 
 Clarke, J., Huntingford, C., Ritchie, P., & Cox, P. (2023).
 Seeking more robust early warning signals for climate tipping points:
