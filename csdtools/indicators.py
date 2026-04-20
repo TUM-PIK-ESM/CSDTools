@@ -123,7 +123,7 @@ def estimate_ac1(
         Pre-processed time series window.  NaN values are stripped by
         :func:`compute_indicator` before this function is called.
         Pass ``exclude_nan_neighbors=True`` to :func:`compute_indicator`
-        (or to :func:`~csdkit.analyze_timeseries`) to also remove values
+        (or to :func:`~csdtools.analyze_timeseries`) to also remove values
         that were adjacent to NaN positions in the original series.
     dt : float
         Time step (not used by this estimator; present for API consistency).
@@ -450,8 +450,9 @@ def estimate_lambda_km(
         from kramersmoyal import km  # type: ignore
 
         powers = np.array([[1], [2]])
-        kmc, edges = km(x, bins=[bin_number], powers=powers, bw=bw)
-        km1 = kmc[0] / dt   # drift normalised by time step
+        kmc, edges = km(x.reshape(-1, 1), bins=np.array([bin_number]),
+                        powers=powers, bw=bw)
+        km1 = kmc[0].flatten() / dt   # drift normalised by time step
         centres = (edges[0][:-1] + edges[0][1:]) / 2.0
 
         n = len(centres)
@@ -617,10 +618,10 @@ def compute_indicator(
         removes a small number of additional samples near gap edges, which
         can slightly improve stationarity within the window.
 
-        When using :func:`~csdkit.analyze_timeseries`, NaN neighbours are
+        When using :func:`~csdtools.analyze_timeseries`, NaN neighbours are
         already removed from the full series before windowing, so this
         parameter is only meaningful for direct calls to ``compute_indicator``
-        or :func:`~csdkit.sliding_window.sliding_window_analysis` on data
+        or :func:`~csdtools.sliding_window.sliding_window_analysis` on data
         that still contains NaNs.
     **kwargs
         Additional arguments forwarded to the specific estimator function.

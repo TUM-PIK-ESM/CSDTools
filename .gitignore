@@ -1,1 +1,18 @@
-csdkit/__pycache__/
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Generated example output (not committed — figures in docs/ are committed)
+csdtools/examples/*.png
+*.png

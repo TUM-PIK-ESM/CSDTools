@@ -37,7 +37,7 @@ def sliding_window_analysis(
     x : np.ndarray, shape (n,)
         1D time series, already globally preprocessed if desired.
     method : str
-        CSD indicator method from :data:`~csdkit.indicators.AVAILABLE_METHODS`.
+        CSD indicator method from :data:`~csdtools.indicators.AVAILABLE_METHODS`.
     window_size : int
         Number of samples per window.
     step : int
@@ -54,7 +54,7 @@ def sliding_window_analysis(
         Minimum fraction of non-NaN values required in a window.
         Windows below this threshold are assigned NaN.
     **method_kwargs
-        Extra keyword arguments forwarded to :func:`~csdkit.indicators.compute_indicator`
+        Extra keyword arguments forwarded to :func:`~csdtools.indicators.compute_indicator`
         and then to the specific estimator function.  Pass
         ``exclude_nan_neighbors=True`` here to apply NaN-neighbour exclusion
         for every window, for any method.

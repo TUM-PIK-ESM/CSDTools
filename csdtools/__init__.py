@@ -1,5 +1,5 @@
 """
-csdkit — Critical Slowing Down Analysis Toolkit
+csdtools — Critical Slowing Down Analysis Toolkit
 ================================================
 
 A unified toolkit for detecting loss of resilience in dynamical systems
@@ -8,7 +8,7 @@ via Critical Slowing Down (CSD) theory.
 Quick start
 -----------
 >>> import numpy as np
->>> from csdkit import analyze_timeseries
+>>> from csdtools import analyze_timeseries
 >>>
 >>> rng = np.random.default_rng(42)
 >>> x = rng.standard_normal(500)
@@ -117,7 +117,7 @@ class CSDResult:
     surrogate_taus : np.ndarray or None
         Full array of Kendall τ values from the surrogate null distribution,
         shape (n_surrogates,).  Stored when ``significance=True`` so that
-        :func:`~csdkit.plotting.plot_significance` can render the histogram.
+        :func:`~csdtools.plotting.plot_significance` can render the histogram.
         ``None`` otherwise.
     method : str
         Name of the CSD indicator method used.

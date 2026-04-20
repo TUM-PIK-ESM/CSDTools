@@ -2,19 +2,19 @@
 Significance testing example.
 
 Demonstrates the surrogate-based significance test and compares the null
-distribution of a CSD series against a stationary one, using the csdkit
+distribution of a CSD series against a stationary one, using the csdtools
 plotting utilities throughout.
 
 Run from the repository root::
 
-    python -m csdkit.examples.significance_testing
+    python -m csdtools.examples.significance_testing
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-from csdkit import analyze_timeseries, plot_analysis, plot_multi_analysis, plot_significance
-from csdkit.plotting import plot_indicator_on_ax
+from csdtools import analyze_timeseries, plot_analysis, plot_multi_analysis, plot_significance
+from csdtools.plotting import plot_indicator_on_ax
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. Synthetic data: series WITH and WITHOUT CSD

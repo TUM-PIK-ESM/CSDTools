@@ -212,7 +212,7 @@ def plot_analysis(
     x : array-like
         The original or preprocessed time series to display in the top panel.
     result : CSDResult
-        Result object from :func:`~csdkit.analyze_timeseries`.
+        Result object from :func:`~csdtools.analyze_timeseries`.
     time_axis : array-like or None
         Physical time values (years, dates, etc.) for the x-axis.
         If None, sample indices are used.
@@ -355,7 +355,7 @@ def plot_multi_analysis(
 
     Examples
     --------
-    >>> from csdkit import analyze_timeseries
+    >>> from csdtools import analyze_timeseries
     >>> results = {
     ...     m: analyze_timeseries(x, method=m, window_size=100)
     ...     for m in ['ac1', 'variance', 'lambda_glsar']
@@ -446,7 +446,7 @@ def plot_significance(
     p-value (fraction of surrogates ≥ observed τ) is shown in a stats box.
 
     Requires ``significance=True`` to have been passed to
-    :func:`~csdkit.analyze_timeseries`, which stores the surrogate τ array
+    :func:`~csdtools.analyze_timeseries`, which stores the surrogate τ array
     in ``result.surrogate_taus``.
 
     Parameters

@@ -1,4 +1,4 @@
-# csdkit — Critical Slowing Down Analysis Toolkit
+# CSDTools — Critical Slowing Down Analysis Toolkit
 
 A unified Python toolkit for detecting loss of resilience in dynamical systems
 using **Critical Slowing Down (CSD)** theory.  The package consolidates
@@ -98,7 +98,7 @@ For a stable system **φ ∈ (0, 1)**.  At the tipping point **φ → 1**.
 | Variance | `σ²/(1 − φ²)` | Increases toward ∞ |
 | Restoring rate | `λ = log(φ)/Δt` | Increases toward 0 |
 
-All methods in csdkit either estimate **λ** directly or track **AC1** and
+All methods in csdtools either estimate **λ** directly or track **AC1** and
 **variance** as proxies.
 
 ---
@@ -193,10 +193,10 @@ The number of lags used is controlled by the `max_lag` parameter.
 
 **Pros**: Uses more information (multiple lags) than a single-lag estimator;
 robust to moderate noise.  
-**Cons**: Requires solving a nonlinear optimisation.
+**Cons**: Requires solving a nonlinear optimisation; ≥ 300 samples recommended.
 
 ```python
-result = analyze_timeseries(x, method='lambda_acs', window_size=100,
+result = analyze_timeseries(x, method='lambda_acs', window_size=300,
                             max_lag=20)
 ```
 
@@ -220,10 +220,10 @@ ordinates.
 
 **Pros**: Uses all available frequency information; independent of
 time-domain autocorrelation estimates.  
-**Cons**: Requires ≥ 16 samples; sensitive to spectral leakage.
+**Cons**: Sensitive to spectral leakage; ≥ 300 samples recommended for reliable fits.
 
 ```python
-result = analyze_timeseries(x, method='lambda_psd', window_size=100)
+result = analyze_timeseries(x, method='lambda_psd', window_size=300)
 ```
 
 **References**: Morr & Boers (2024); Morr et al. (2024).
@@ -290,12 +290,12 @@ result = analyze_timeseries(x, method='rosa', window_size=100, eta=0.5)
 
 ### Spatial Correlation
 
-Found in `csdkit.spatial`.  Not a time-series indicator in the same sense as
+Found in `csdtools.spatial`.  Not a time-series indicator in the same sense as
 the above — instead, it quantifies the **spatial correlation length**
 increase predicted by CSD in spatially extended systems.
 
 ```python
-from csdkit.spatial import sliding_spatial_correlation, compute_distance_matrix
+from csdtools.spatial import sliding_spatial_correlation, compute_distance_matrix
 
 D = compute_distance_matrix(lats, lons)   # pairwise km distances
 spc, times = sliding_spatial_correlation(
@@ -311,12 +311,12 @@ spc, times = sliding_spatial_correlation(
 
 ### Empirical Recovery Rate
 
-Found in `csdkit.empirical`.  For time series where transitions *have
+Found in `csdtools.empirical`.  For time series where transitions *have
 already occurred*, fits an exponential recovery curve after each transition
 to estimate the empirical recovery rate λ_emp.
 
 ```python
-from csdkit.empirical import empirical_recovery_rate
+from csdtools.empirical import empirical_recovery_rate
 
 results = empirical_recovery_rate(x, window_size=100)
 for r in results:
@@ -327,38 +327,37 @@ for r in results:
 
 ## 4. Installation
 
-Clone the repository and install csdkit as an editable package:
+Clone the repository and install:
 
 ```bash
 git clone <repo-url>
 cd CSDTools
-pip install -e .
+pip install .
 ```
 
 This installs all required dependencies (`numpy`, `scipy`, `statsmodels`,
-`matplotlib`) automatically.  The `-e` flag means edits to the source are
-reflected immediately without reinstalling.
+`matplotlib`) automatically.
 
 Optional extras for specific methods:
 
 ```bash
-pip install -e ".[km]"       # adds kramersmoyal  (method='lambda_km')
-pip install -e ".[spatial]"  # adds pyproj        (spatial.compute_distance_matrix)
-pip install -e ".[km,spatial]"  # both
+pip install ".[km]"          # adds kramersmoyal  (method='lambda_km')
+pip install ".[spatial]"     # adds pyproj        (spatial.compute_distance_matrix)
+pip install ".[km,spatial]"  # both
 ```
 
-After installation, `import csdkit` works from any directory.
+After installation, `import csdtools` works from any directory.
 
 ---
 
 ## 5. Workflow
 
 This section walks through a complete analysis from raw data to publication-ready
-figures.  Each step corresponds to a function in csdkit.
+figures.  Each step corresponds to a function in csdtools.
 
 ### Step 1 — Load your data
 
-csdkit works with any 1-D NumPy array of evenly-sampled observations.  Load
+csdtools works with any 1-D NumPy array of evenly-sampled observations.  Load
 your data however is most convenient and convert it to an array:
 
 ```python
@@ -425,9 +424,9 @@ highly non-stationary data).
 | `'variance'` | Window variance | Complementary to AC1 |
 | `'lambda_glsar'` | Restoring rate via GLS | **Recommended default** |
 | `'lambda_ols'` | Restoring rate via Yule-Walker | Faster alternative to GLSAR |
-| `'lambda_acs'` | Restoring rate via ACF fit | Robust with multiple lags |
-| `'lambda_psd'` | Restoring rate via PSD fit | Uses full spectral information |
-| `'lambda_km'` | Restoring rate via Kramers-Moyal | Non-parametric; needs ≥ 200 pts/window |
+| `'lambda_acs'` | Restoring rate via ACF fit | Robust with multiple lags; ≥ 300 pts/window |
+| `'lambda_psd'` | Restoring rate via PSD fit | Full spectral information; ≥ 300 pts/window |
+| `'lambda_km'` | Restoring rate via Kramers-Moyal | Non-parametric; ≥ 300 pts/window |
 | `'rosa'` | Ratio of spectral bands | Robust to some non-stationarities |
 
 Start with `lambda_glsar` unless you have a specific reason to prefer another.
@@ -438,7 +437,7 @@ Use multiple methods together (Step 7) to assess robustness.
 ### Step 4 — Run the analysis
 
 ```python
-from csdkit import analyze_timeseries
+from csdtools import analyze_timeseries
 
 result = analyze_timeseries(
     x,
@@ -479,7 +478,7 @@ is below the recommended minimum for the chosen method (e.g., 30 for GLSAR,
 ### Step 5 — Visualise the results
 
 ```python
-from csdkit import plot_analysis
+from csdtools import plot_analysis
 
 fig, axes = plot_analysis(
     x,
@@ -529,7 +528,7 @@ print(f"Surrogate p-value = {result.surrogate_p_value:.4f}")
 Visualise the null distribution:
 
 ```python
-from csdkit import plot_significance
+from csdtools import plot_significance
 
 fig, ax = plot_significance(result)
 fig.savefig("null_dist.png", dpi=150)
@@ -545,14 +544,18 @@ marked and the 5 % rejection region shaded in red.
 Robustness across methods strengthens the evidence for CSD:
 
 ```python
-from csdkit import analyze_timeseries, plot_multi_analysis
+from csdtools import analyze_timeseries, plot_multi_analysis
 
-methods = ['ac1', 'variance', 'lambda_glsar', 'lambda_ols', 'lambda_psd']
+# lambda_acs, lambda_psd, and lambda_km need more data per window
+WINDOW_SIZES = {'lambda_acs': 300, 'lambda_psd': 300, 'lambda_km': 300}
+
+methods = ['ac1', 'variance', 'lambda_glsar', 'lambda_ols',
+           'lambda_acs', 'lambda_psd', 'rosa', 'lambda_km']
 
 results = {
     m: analyze_timeseries(
         x, method=m,
-        window_size=200,
+        window_size=WINDOW_SIZES.get(m, 200),
         detrend='running_mean', detrend_window=400,
     )
     for m in methods
@@ -610,7 +613,7 @@ combine with all methods.
 ### `analyze_timeseries`
 
 ```python
-from csdkit import analyze_timeseries
+from csdtools import analyze_timeseries
 
 result = analyze_timeseries(
     x,                    # 1D array-like, required
@@ -647,7 +650,7 @@ Returns a `CSDResult` with fields:
 Compute a single indicator value on a pre-extracted window:
 
 ```python
-from csdkit import compute_indicator
+from csdtools import compute_indicator
 
 val = compute_indicator(window, method='lambda_glsar', dt=1.0)
 ```
@@ -659,7 +662,7 @@ val = compute_indicator(window, method='lambda_glsar', dt=1.0)
 Low-level sliding window function, returns indicator array and times:
 
 ```python
-from csdkit.sliding_window import sliding_window_analysis
+from csdtools.sliding_window import sliding_window_analysis
 
 indicator, times = sliding_window_analysis(
     x_preprocessed,
@@ -677,7 +680,7 @@ Run significance testing separately (e.g., for a previously computed
 preprocessed series):
 
 ```python
-from csdkit.significance import significance_test
+from csdtools.significance import significance_test
 
 tau, p_val, surr_taus = significance_test(
     x_processed,
@@ -694,7 +697,7 @@ tau, p_val, surr_taus = significance_test(
 Apply global preprocessing independently of the full pipeline:
 
 ```python
-from csdkit.preprocessing import preprocess
+from csdtools.preprocessing import preprocess
 
 x_dt = preprocess(x, method='running_mean', window=200)
 x_dt = preprocess(x, method='stl', period=12)
@@ -763,7 +766,7 @@ The surrogate p-value is the **fraction of surrogates** whose Kendall τ is
 
 ## 9. Plotting
 
-The `csdkit.plotting` module (also importable directly from `csdkit`)
+The `csdtools.plotting` module (also importable directly from `csdtools`)
 provides three ready-made figure layouts.
 
 ---
@@ -775,7 +778,7 @@ indicator below it.  A dashed linear trend line and a stats box showing
 Kendall τ and p-values are overlaid on the indicator panel by default.
 
 ```python
-from csdkit import analyze_timeseries, plot_analysis
+from csdtools import analyze_timeseries, plot_analysis
 
 result = analyze_timeseries(x, method='lambda_glsar', window_size=100,
                             significance=True, n_surrogates=1000)
@@ -812,7 +815,7 @@ series at the top.  Each method gets a distinct colour from the built-in
 palette.
 
 ```python
-from csdkit import analyze_timeseries, plot_multi_analysis
+from csdtools import analyze_timeseries, plot_multi_analysis
 
 methods = ['ac1', 'variance', 'lambda_glsar', 'lambda_ols', 'rosa']
 results = {m: analyze_timeseries(x, method=m, window_size=100)
@@ -859,7 +862,7 @@ Useful when building larger custom figures.
 
 ```python
 import matplotlib.pyplot as plt
-from csdkit.plotting import plot_indicator_on_ax
+from csdtools.plotting import plot_indicator_on_ax
 
 fig, axes = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
 plot_indicator_on_ax(axes[0], result_ac1, time_axis=years)
@@ -886,25 +889,41 @@ Each method has a consistent default colour across all plot types:
 | `rosa` | Pink |
 
 Override any colour via the `indicator_color` parameter or the
-`csdkit.plotting.METHOD_COLORS` dictionary.
+`csdtools.plotting.METHOD_COLORS` dictionary.
 
 ---
 
 ## 10. Examples
 
-Example scripts are in `csdkit/examples/`:
+Example scripts are in `csdtools/examples/`:
 
 | Script | Description |
 |--------|-------------|
-| `basic_analysis.py` | Run all methods on a synthetic CSD series, compare Kendall τ values, test significance. |
+| `basic_analysis.py` | Run all 8 methods on a synthetic CSD series, compare Kendall τ values, test significance. |
 | `significance_testing.py` | Compare null distributions for CSD vs stationary series; visualise surrogate histograms. |
 
 Run from the `CSDTools` directory:
 
 ```bash
-python -m csdkit.examples.basic_analysis
-python -m csdkit.examples.significance_testing
+python -m csdtools.examples.basic_analysis
+python -m csdtools.examples.significance_testing
 ```
+
+### All-methods comparison
+
+The multi-method plot shows the original time series (top) alongside all 8
+CSD indicators in stacked panels, each with a Theil-Sen trend line and
+annotated Kendall τ / p-value.
+
+![All-methods comparison](docs/csd_basic_multi.png)
+
+### Surrogate significance test
+
+The null distribution plot shows the histogram of Kendall τ values from 500
+Fourier-phase surrogates.  The observed τ (red line) sits far outside the
+null distribution, confirming a statistically significant trend.
+
+![Surrogate null distribution](docs/csd_basic_significance.png)
 
 ---
 

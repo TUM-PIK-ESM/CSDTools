@@ -86,7 +86,7 @@ def significance_test(
     x : np.ndarray
         Input time series (after global preprocessing, if any).
     method : str
-        CSD indicator method (see :data:`~csdkit.indicators.AVAILABLE_METHODS`).
+        CSD indicator method (see :data:`~csdtools.indicators.AVAILABLE_METHODS`).
     window_size : int
         Sliding window size.
     step : int

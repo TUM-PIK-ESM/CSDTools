@@ -1,5 +1,5 @@
 """
-Internal utility functions shared across csdkit modules.
+Internal utility functions shared across csdtools modules.
 """
 
 import warnings

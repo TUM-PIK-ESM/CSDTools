@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "csdtools"
+version = "1.0.0"
+description = "Critical Slowing Down Analysis Toolkit"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "numpy>=1.21",
+    "scipy>=1.7",
+    "statsmodels>=0.12",
+    "matplotlib>=3.4",
+]
+
+[project.optional-dependencies]
+km      = ["kramersmoyal>=0.4"]   # for method='lambda_km'
+spatial = ["pyproj>=3.0"]         # for spatial.compute_distance_matrix()
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["csdtools*"]
