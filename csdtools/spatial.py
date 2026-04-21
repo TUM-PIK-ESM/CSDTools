@@ -21,7 +21,7 @@ spatial heterogeneity. *Science*.
 """
 
 import numpy as np
-from typing import Optional, Tuple
+from typing import Optional
 
 
 def spatial_correlation(
@@ -79,63 +79,6 @@ def spatial_correlation(
     if total_w == 0.0:
         return np.nan
     return float(weighted_sum / total_w)
-
-
-def sliding_spatial_correlation(
-    data: np.ndarray,
-    distance_matrix: np.ndarray,
-    window_size: int,
-    step: int = 1,
-    min_dist: float = 0.0,
-    max_dist: Optional[float] = None,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Compute sliding-window spatial correlation.
-
-    Applies :func:`spatial_correlation` inside a sliding window along the
-    time axis.  Returns the spatial correlation timeseries and the
-    corresponding window midpoint indices.
-
-    Parameters
-    ----------
-    data : np.ndarray, shape (n_cells, n_time)
-        Multi-cell time series.
-    distance_matrix : np.ndarray, shape (n_cells, n_cells)
-        Pairwise cell distances.
-    window_size : int
-        Number of time steps per window.
-    step : int
-        Step between consecutive windows.
-    min_dist : float
-        Minimum distance threshold for cell pairs.
-    max_dist : float or None
-        Maximum distance threshold for cell pairs.
-
-    Returns
-    -------
-    spc : np.ndarray
-        Spatial correlation value at each window position.
-    times : np.ndarray
-        Midpoint time index of each window.
-
-    Examples
-    --------
-    >>> spc, t = sliding_spatial_correlation(
-    ...     data, dist_matrix, window_size=120, step=1
-    ... )
-    """
-    n_time = data.shape[1]
-    starts = np.arange(0, n_time - window_size + 1, step)
-    spc = np.full(len(starts), np.nan)
-    times = starts + window_size // 2
-
-    for k, i in enumerate(starts):
-        window = data[:, i : i + window_size]
-        spc[k] = spatial_correlation(
-            window, distance_matrix, min_dist=min_dist, max_dist=max_dist
-        )
-
-    return spc, times.astype(float)
 
 
 def compute_distance_matrix(

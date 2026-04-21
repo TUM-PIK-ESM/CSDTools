@@ -47,8 +47,8 @@ WINDOW_SIZES = {
     "lambda_km":  WINDOW_300,
 }
 
-methods = ["ac1", "variance", "lambda_glsar", "lambda_ols", "lambda_acs",
-           "lambda_psd", "rosa", "lambda_km"]
+methods = ["ac1", "variance", "skewness", "lambda_glsar", "lambda_ols",
+           "lambda_acs", "lambda_psd", "rosa", "lambda_km"]
 
 results = {}
 

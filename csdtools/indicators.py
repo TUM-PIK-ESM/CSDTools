@@ -48,12 +48,15 @@ from ._utils import remove_linear_trend
 RECOMMENDED_MIN_WINDOW: dict = {
     "ac1":          30,   # need ~30 lag-1 pairs for a stable correlation
     "variance":     20,   # variance estimate needs a few dozen samples
+    "skewness":     30,   # third moment needs enough samples to be reliable
     "lambda_glsar": 50,   # GLS iteration needs enough data to converge
     "lambda_ols":   30,   # Yule-Walker estimator stabilises around 30
     "lambda_acs":   50,   # ACF must be estimated reliably at multiple lags
     "lambda_psd":   30,   # periodogram needs adequate frequency resolution
     "lambda_km":    100,  # non-parametric KM needs many samples; 200+ ideal
     "rosa":         30,   # spectral ratio needs adequate frequency resolution
+    "lambda_dmd":   50,   # DMD needs enough snapshots to resolve the operator
+    "spatial_corr": 30,   # Pearson correlation needs enough samples per cell
 }
 
 #: Human-readable explanation of why each method needs a minimum window.
@@ -63,6 +66,9 @@ _MIN_WINDOW_REASON: dict = {
         "an unreliable Pearson correlation.",
     "variance":
         "The sample variance has high relative uncertainty below ~20 samples.",
+    "skewness":
+        "The third standardised moment has high relative uncertainty below "
+        "~30 samples.",
     "lambda_glsar":
         "GLSAR iterative fitting may not converge reliably below ~50 samples.",
     "lambda_ols":
@@ -79,6 +85,12 @@ _MIN_WINDOW_REASON: dict = {
     "rosa":
         "The spectral ratio method needs adequate frequency resolution "
         "in both bands; ~30 samples is the practical minimum.",
+    "lambda_dmd":
+        "DMD requires more snapshots than state dimensions to solve the "
+        "linear operator; ~50 samples is the practical minimum.",
+    "spatial_corr":
+        "Pearson correlation between cell pairs requires sufficient samples "
+        "for a stable estimate; ~30 samples per window is the practical minimum.",
 }
 
 
@@ -169,6 +181,50 @@ def estimate_variance(
     """
     x = _prep(x, detrend)
     return float(np.var(x, ddof=1))
+
+
+def estimate_skewness(
+    x: np.ndarray,
+    dt: float = 1.0,
+    detrend: bool = True,
+) -> float:
+    """
+    Sample skewness (adjusted Fisher-Pearson standardised moment coefficient).
+
+    Near a fold bifurcation the effective potential well becomes asymmetric,
+    causing the distribution of fluctuations to skew.  The magnitude of
+    skewness increases as the system approaches the bifurcation; the sign
+    depends on whether the bifurcation is approached from above or below.
+
+    Uses the bias-corrected (adjusted) estimator G1, equivalent to
+    ``scipy.stats.skew(x, bias=False)``.
+
+    **CSD signature**: |skewness| increases.
+
+    Parameters
+    ----------
+    x : array-like, shape (n,)
+        Pre-processed time series window.
+    dt : float
+        Time step (unused).
+    detrend : bool
+        Remove linear trend within window.
+
+    Returns
+    -------
+    float
+        Adjusted skewness coefficient.  Sign depends on bifurcation type.
+    """
+    x = _prep(x, detrend)
+    n = len(x)
+    if n < 4:
+        return np.nan
+    xbar = np.mean(x)
+    s = np.std(x, ddof=1)
+    if s == 0.0:
+        return np.nan
+    m3 = np.mean((x - xbar) ** 3)
+    return float(np.sqrt(n * (n - 1)) / (n - 2) * m3 / s ** 3)
 
 
 # ---------------------------------------------------------------------------
@@ -405,33 +461,48 @@ def estimate_lambda_km(
     """
     Restoring rate via non-parametric Kramers-Moyal (KM) estimation.
 
-    Estimates the 1st Kramers-Moyal coefficient (drift) D¹(x) from the data
-    using a kernel density approach.  For an OU process D¹(x) = λ·x, so the
-    slope of D¹ vs x gives λ directly without assuming a specific noise model.
+    Supports both univariate (1D) and multivariate (nD) time series.
+
+    **1D**: estimates the drift D¹(x) = λ·x by linear regression on the first
+    KM coefficient.  The slope gives λ directly without assuming a parametric
+    noise model.
+
+    **nD**: estimates the full drift Jacobian B (so that D¹(x) ≈ B·x) and
+    returns the dominant (least-negative) real eigenvalue of B.  This is the
+    eigenvalue closest to 0 and the one expected to increase toward 0 as CSD
+    develops.  Each variable is normalised by its standard deviation before
+    the KM estimation to improve numerical conditioning.  Input must have
+    shape ``(n_dims, n_samples)`` with each row being one variable.
 
     **CSD signature**: λ increases toward 0.
 
     Parameters
     ----------
-    x : array-like
-        Pre-processed window.  Non-parametric estimation requires more data
-        than the parametric methods; ≥ 200 samples is recommended.
+    x : array-like, shape (n,) or (n_dims, n_samples)
+        Time series window.  For univariate analysis pass a 1D array of
+        length n.  For multivariate analysis pass a 2D array where each
+        row is one variable and each column is one time step; n_dims and
+        n_samples are inferred from the array shape.  Non-parametric
+        estimation requires more data than the parametric methods;
+        ≥ 200 samples is recommended.
     dt : float
         Physical time step (used to normalise the KM coefficients).
     bin_number : int
-        Number of bins for the KM estimator.
+        Number of bins per dimension for the KM estimator.
     bw : float or None
         Kernel bandwidth.  If None, estimated automatically from the data.
     center_fraction : float
-        Fraction of central bins used for the linear fit of D¹ vs x.
-        Edge bins can be noisy due to sparse sampling.
+        Fraction of central bins used for the linear fit of D¹ vs x (1D) or
+        for the Jacobian regression (nD).  Edge bins can be noisy due to
+        sparse sampling.
     detrend : bool
-        Remove linear trend within window.
+        Remove linear trend within window (applied per dimension for nD input).
 
     Returns
     -------
     float
-        Continuous-time restoring rate λ.
+        Continuous-time restoring rate λ (negative for stable systems,
+        increases toward 0 as CSD develops).
 
     Notes
     -----
@@ -443,35 +514,134 @@ def estimate_lambda_km(
     ----------
     Morr & Boers (2024); Morr et al. (2024).
     """
-    x = _prep(x, detrend)
-    if len(x) < 50:
-        return np.nan
-    try:
-        from kramersmoyal import km  # type: ignore
+    x = np.asarray(x, dtype=float).copy()
 
-        powers = np.array([[1], [2]])
-        kmc, edges = km(x.reshape(-1, 1), bins=np.array([bin_number]),
-                        powers=powers, bw=bw)
-        km1 = kmc[0].flatten() / dt   # drift normalised by time step
-        centres = (edges[0][:-1] + edges[0][1:]) / 2.0
-
-        n = len(centres)
-        i0 = int(n * (1.0 - center_fraction) / 2.0)
-        i1 = n - i0
-        cx = centres[i0:i1]
-        cy = km1[i0:i1]
-        mask = np.isfinite(cy)
-        if mask.sum() < 3:
+    if x.ndim == 1:
+        # ------------------------------------------------------------------ 1D
+        x = _prep(x, detrend)
+        if len(x) < 50:
             return np.nan
-        lam = np.polyfit(cx[mask], cy[mask], 1)[0]
-        return float(lam)
-    except ImportError:
+        try:
+            from kramersmoyal import km  # type: ignore
+
+            powers = np.array([[1], [2]])
+            kmc, edges = km(x.reshape(-1, 1), bins=np.array([bin_number]),
+                            powers=powers, bw=bw)
+            km1 = kmc[0].flatten() / dt   # drift normalised by time step
+            centres = (edges[0][:-1] + edges[0][1:]) / 2.0
+
+            n_bins = len(centres)
+            i0 = int(n_bins * (1.0 - center_fraction) / 2.0)
+            i1 = n_bins - i0
+            cx = centres[i0:i1]
+            cy = km1[i0:i1]
+            mask = np.isfinite(cy)
+            if mask.sum() < 3:
+                return np.nan
+            lam = np.polyfit(cx[mask], cy[mask], 1)[0]
+            return float(lam)
+        except ImportError:
+            warnings.warn(
+                "The 'kramersmoyal' package is not installed; 'lambda_km' is unavailable. "
+                "Install with: pip install kramersmoyal"
+            )
+            return np.nan
+        except Exception:
+            return np.nan
+
+    elif x.ndim == 2:
+        # ------------------------------------------------------------------ nD
+        # x shape: (n_dims, n_samples)
+        import itertools
+
+        n_dims, n_samples = x.shape
+        if n_samples < 50:
+            return np.nan
+        try:
+            from kramersmoyal import km  # type: ignore
+
+            # Detrend each dimension while keeping its mean (needed for KM
+            # to locate the stable state correctly)
+            if detrend:
+                for i in range(n_dims):
+                    center_i = float(np.mean(x[i]))
+                    x[i] = remove_linear_trend(x[i]) + center_i
+
+            # Normalise each dimension by its std (whitening) so that the
+            # shared bandwidth parameter is meaningful across dimensions
+            stds = np.array([np.std(x[i]) for i in range(n_dims)])
+            x_norm = np.array(
+                [(x[i] - np.mean(x[i])) / stds[i] + np.mean(x[i])
+                 for i in range(n_dims)]
+            )
+            center = np.array([float(np.mean(x_norm[i])) for i in range(n_dims)])
+
+            # Powers: zeroth moment + unit vector for each dimension
+            powers = np.array(
+                [[0] * n_dims]
+                + [[0] * i + [1] + [0] * (n_dims - 1 - i) for i in range(n_dims)]
+            )
+            bins = (np.ones(n_dims) * bin_number).astype(int)
+            bw_used = n_dims * 14.0 / bin_number if bw is None else bw
+
+            kmc, edges = km(
+                np.transpose(x_norm), bw=bw_used, bins=bins, powers=powers
+            )
+            # kmc[0] is the zeroth moment; kmc[1:] are the first-order drift
+            # coefficients for each dimension
+            km1 = [kmc[i + 1] / dt for i in range(n_dims)]
+
+            # Keep only the central fraction of bins around the stable state
+            for i in range(n_dims):
+                center_idx = np.searchsorted(edges[i], center[i])
+                half = round(bin_number * center_fraction / 2)
+                left = max(0, center_idx - half)
+                right = min(bin_number - 1, center_idx + half)
+                min_bins = round(bin_number * center_fraction)
+                left = min(min_bins, left)
+                right = max(min_bins, right)
+                edges[i] = edges[i][left:right]
+                km1 = list(km1)
+                for j in range(n_dims):
+                    km1[j] = km1[j].take(indices=range(left, right), axis=i)
+
+            # Build OLS design matrix over the grid of retained bin centres
+            mesh = np.meshgrid(*edges, indexing="ij")
+            idx_iter = list(
+                itertools.product(*[range(len(mesh[j])) for j in range(n_dims)])
+            )
+            X_mat = np.array(
+                [[1.0] + [mesh[i][t] for i in range(n_dims)] for t in idx_iter]
+            )
+            Y_mat = np.array(
+                [[km1[i][t] for i in range(n_dims)] for t in idx_iter]
+            )
+
+            # OLS: B_full = (X'X)^{-1} X' Y, then drop intercept row
+            XtX = X_mat.T @ X_mat
+            B = np.linalg.inv(XtX) @ X_mat.T @ Y_mat
+            B = B[1:, :]  # (n_dims, n_dims) Jacobian of drift
+
+            # Dominant eigenvalue (least negative = closest to 0 = CSD signal)
+            eigvals = np.real(np.linalg.eigvals(B))
+            return float(np.max(eigvals))
+
+        except ImportError:
+            warnings.warn(
+                "The 'kramersmoyal' package is not installed; 'lambda_km' is unavailable. "
+                "Install with: pip install kramersmoyal"
+            )
+            return np.nan
+        except Exception:
+            return np.nan
+
+    else:
         warnings.warn(
-            "The 'kramersmoyal' package is not installed; 'lambda_km' is unavailable. "
-            "Install with: pip install kramersmoyal"
+            f"estimate_lambda_km: input must be 1D or 2D (got ndim={x.ndim}); "
+            "returning NaN.",
+            UserWarning,
+            stacklevel=2,
         )
-        return np.nan
-    except Exception:
         return np.nan
 
 
@@ -562,21 +732,223 @@ def estimate_rosa(
 
 
 # ---------------------------------------------------------------------------
+# DMD-based indicator
+# ---------------------------------------------------------------------------
+
+def estimate_lambda_dmd(
+    x: np.ndarray,
+    dt: float = 1.0,
+    embedding_dim: int = 1,
+    tau: int = 1,
+    dmd_rank: int = -1,
+    detrend: bool = True,
+) -> float:
+    """
+    Dominant DMD eigenvalue magnitude via Dynamic Mode Decomposition.
+
+    Fits a linear operator A such that A·X ≈ Y (where columns of X and Y are
+    consecutive state snapshots) using DMD and returns the magnitude of the
+    dominant eigenvalue.  For a stable system near a fixed point the dominant
+    eigenvalue has magnitude < 1; as the system approaches a bifurcation the
+    magnitude increases toward 1.
+
+    Both 1D and nD inputs are handled uniformly: a 1D signal is treated as a
+    single-row state.  For each dimension, time-delay (Hankel) embedding with
+    lag ``tau`` and depth ``embedding_dim`` is applied, and the resulting rows
+    are stacked to form the state matrix.  With ``embedding_dim=1`` the raw
+    snapshots are used directly.  For 1D signals a higher ``embedding_dim``
+    (e.g. 3–10) lifts the scalar series into a richer state space and usually
+    gives more stable eigenvalue estimates.
+
+    **CSD signature**: dominant eigenvalue magnitude increases toward 1.
+
+    Parameters
+    ----------
+    x : array-like, shape (n,) or (n_dims, n_samples)
+        Time series window.  1D arrays are treated as a single-row state
+        (n_dims=1).  For 2D arrays each row is one variable and each column
+        is one time step; n_dims and n_samples are inferred from the shape.
+    dt : float
+        Time step (unused; present for API consistency).
+    embedding_dim : int
+        Number of time-delay lags used to construct the state vector.
+        ``embedding_dim=1`` uses raw snapshots without additional embedding.
+    tau : int
+        Lag in samples between successive embedded copies of the state.
+    dmd_rank : int
+        SVD rank truncation for DMD.  ``-1`` keeps all singular values;
+        smaller values filter noise at the cost of information.
+    detrend : bool
+        Remove a linear trend within the window before fitting DMD
+        (applied per row for nD input).
+
+    Returns
+    -------
+    float
+        Magnitude of the dominant DMD eigenvalue.  In (0, 1) for stable
+        systems; increases toward 1 as resilience is lost.
+
+    Notes
+    -----
+    Requires the ``pydmd`` package::
+
+        pip install pydmd
+
+    References
+    ----------
+    Smith et al. (2024).
+    """
+    x = np.asarray(x, dtype=float).copy()
+
+    if x.ndim == 1:
+        x = x.reshape(1, -1)
+    elif x.ndim != 2:
+        warnings.warn(
+            f"estimate_lambda_dmd: input must be 1D or 2D (got ndim={x.ndim}); "
+            "returning NaN.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return np.nan
+
+    n_dims, n_samples = x.shape
+
+    if detrend:
+        for i in range(n_dims):
+            x[i] = remove_linear_trend(x[i])
+
+    # Number of columns in the Hankel-embedded matrix
+    n_cols = n_samples - (embedding_dim - 1) * tau
+    if n_cols < 3:
+        return np.nan
+
+    try:
+        from pydmd import DMD  # type: ignore
+
+        # Build time-delay Hankel embedding and stack across all dimensions.
+        # For dimension i and lag k, row k of H_i is x[i, k*tau : k*tau + n_cols].
+        # Stacking all (n_dims * embedding_dim) rows gives the full state matrix.
+        rows = []
+        for i in range(n_dims):
+            for k in range(embedding_dim):
+                rows.append(x[i, k * tau : k * tau + n_cols])
+        H = np.vstack(rows)  # (n_dims * embedding_dim, n_cols)
+
+        dmd = DMD(svd_rank=dmd_rank)
+        dmd.fit(X=H[:, :-1], Y=H[:, 1:])
+
+        magnitudes = np.abs(dmd.eigs)
+        if len(magnitudes) == 0:
+            return np.nan
+        return float(np.max(magnitudes))
+
+    except ImportError:
+        warnings.warn(
+            "The 'pydmd' package is not installed; 'lambda_dmd' is unavailable. "
+            "Install with: pip install pydmd",
+            UserWarning,
+        )
+        return np.nan
+    except Exception:
+        return np.nan
+
+
+# ---------------------------------------------------------------------------
+# Multivariate spatial correlation indicator
+# ---------------------------------------------------------------------------
+
+def estimate_spatial_corr(
+    x: np.ndarray,
+    dt: float = 1.0,
+    detrend: bool = True,
+    distance_matrix: Optional[np.ndarray] = None,
+    min_dist: float = 0.0,
+    max_dist: Optional[float] = None,
+) -> float:
+    """
+    Distance-weighted mean spatial correlation (CSD indicator).
+
+    For a spatially extended system approaching a critical transition the
+    correlation length diverges: distant locations become increasingly
+    correlated.  For each pair of cells (i, j) at distance d_{ij}, the
+    Pearson correlation of their time series is computed and averaged with
+    weight 1/d_{ij}.
+
+    **CSD signature**: spatial correlation increases.
+
+    Parameters
+    ----------
+    x : np.ndarray, shape (n_cells, n_samples)
+        Multi-cell time series window.  Each row is one spatial cell.
+    dt : float
+        Time step (unused; present for API consistency).
+    detrend : bool
+        Remove a linear trend within each cell's window before computing
+        correlations.
+    distance_matrix : np.ndarray, shape (n_cells, n_cells)
+        Symmetric pairwise distance matrix (e.g. in km).  Required.
+    min_dist : float
+        Exclude cell pairs closer than this distance.
+    max_dist : float or None
+        Exclude cell pairs farther than this distance.
+
+    Returns
+    -------
+    float
+        Distance-weighted mean spatial Pearson correlation.
+
+    Notes
+    -----
+    Pass ``distance_matrix=D`` via ``**method_kwargs`` to
+    :func:`~csdtools.analyze_timeseries` or
+    :func:`~csdtools.sliding_window.sliding_window_analysis`.
+
+    References
+    ----------
+    Blaschke et al. (2024); Rietkerk et al. (2021).
+    """
+    if distance_matrix is None:
+        warnings.warn(
+            "'spatial_corr' requires a distance_matrix parameter; returning NaN.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return np.nan
+
+    x = np.asarray(x, dtype=float).copy()
+    if detrend:
+        for i in range(x.shape[0]):
+            x[i] = remove_linear_trend(x[i])
+
+    from .spatial import spatial_correlation
+    return spatial_correlation(
+        x, distance_matrix, min_dist=min_dist, max_dist=max_dist
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registry and unified interface
 # ---------------------------------------------------------------------------
 
 #: Maps method name → (function, bool: uses_dt).
 #: The bool is informational; all functions accept dt for API uniformity.
 INDICATOR_REGISTRY: dict = {
-    "ac1":          (estimate_ac1,          False),
-    "variance":     (estimate_variance,     False),
-    "lambda_glsar": (estimate_lambda_glsar, True),
-    "lambda_ols":   (estimate_lambda_ols,   True),
-    "lambda_acs":   (estimate_lambda_acs,   True),
-    "lambda_psd":   (estimate_lambda_psd,   True),
-    "lambda_km":    (estimate_lambda_km,    True),
-    "rosa":         (estimate_rosa,         True),
+    "ac1":           (estimate_ac1,           False),
+    "variance":      (estimate_variance,      False),
+    "skewness":      (estimate_skewness,      False),
+    "lambda_glsar":  (estimate_lambda_glsar,  True),
+    "lambda_ols":    (estimate_lambda_ols,    True),
+    "lambda_acs":    (estimate_lambda_acs,    True),
+    "lambda_psd":    (estimate_lambda_psd,    True),
+    "lambda_km":     (estimate_lambda_km,     True),
+    "rosa":          (estimate_rosa,          True),
+    "lambda_dmd":    (estimate_lambda_dmd,    False),
+    "spatial_corr":  (estimate_spatial_corr,  False),
 }
+
+#: Methods that accept a 2D ``(n_dims, n_samples)`` input array.
+#: All other methods expect a 1D array.  Add new multivariate indicators here.
+ND_METHODS: set = {"lambda_km", "lambda_dmd", "spatial_corr"}
 
 #: List of valid method names for ``analyze_timeseries``.
 AVAILABLE_METHODS: list = list(INDICATOR_REGISTRY.keys())
@@ -644,15 +1016,19 @@ def compute_indicator(
         )
 
     x = np.asarray(x, dtype=float)
-    nan_mask = ~np.isfinite(x)
-    if nan_mask.any():
-        valid = ~nan_mask
-        if exclude_nan_neighbors:
-            nb = np.zeros(len(x), dtype=bool)
-            nb[:-1] |= nan_mask[1:]   # left neighbour of a NaN
-            nb[1:]  |= nan_mask[:-1]  # right neighbour of a NaN
-            valid &= ~nb
-        x = x[valid]
+
+    # NaN removal is only applicable to 1D input; for 2D arrays (e.g. nD KM)
+    # the estimator handles its own data validation.
+    if x.ndim == 1:
+        nan_mask = ~np.isfinite(x)
+        if nan_mask.any():
+            valid = ~nan_mask
+            if exclude_nan_neighbors:
+                nb = np.zeros(len(x), dtype=bool)
+                nb[:-1] |= nan_mask[1:]   # left neighbour of a NaN
+                nb[1:]  |= nan_mask[:-1]  # right neighbour of a NaN
+                valid &= ~nb
+            x = x[valid]
 
     func, _ = INDICATOR_REGISTRY[method]
     return func(x, dt=dt, detrend=detrend, **kwargs)

@@ -13,11 +13,13 @@ several methods into a single, consistent API.
 3. [Available Methods](#3-available-methods)
    - [Lag-1 Autocorrelation (AC1)](#lag-1-autocorrelation-ac1)
    - [Variance](#variance)
+   - [Skewness](#skewness)
    - [Lambda via GLSAR](#lambda-via-glsar)
    - [Lambda via OLS](#lambda-via-ols)
    - [Lambda via ACS](#lambda-via-acs)
    - [Lambda via PSD](#lambda-via-psd)
    - [Lambda via Kramers-Moyal](#lambda-via-kramers-moyal)
+   - [Lambda via DMD](#lambda-via-dmd)
    - [ROSA (Ratio of Spectra)](#rosa-ratio-of-spectra)
    - [Spatial Correlation](#spatial-correlation)
    - [Empirical Recovery Rate](#empirical-recovery-rate)
@@ -31,12 +33,13 @@ several methods into a single, consistent API.
    - [Step 6 — Assess statistical significance](#step-6--assess-statistical-significance)
    - [Step 7 — Compare multiple methods](#step-7--compare-multiple-methods)
    - [Handling missing data (NaNs)](#handling-missing-data-nans)
-6. [Full API Reference](#6-full-api-reference)
-7. [Preprocessing Guide](#7-preprocessing-guide)
-8. [Significance Testing](#8-significance-testing)
-9. [Plotting](#9-plotting)
-10. [Examples](#10-examples)
-11. [References](#11-references)
+6. [Multivariate Analysis](#6-multivariate-analysis)
+7. [Full API Reference](#7-full-api-reference)
+8. [Preprocessing Guide](#8-preprocessing-guide)
+9. [Significance Testing](#9-significance-testing)
+10. [Plotting](#10-plotting)
+11. [Examples](#11-examples)
+12. [References](#12-references)
 
 ---
 
@@ -95,10 +98,11 @@ For a stable system **φ ∈ (0, 1)**.  At the tipping point **φ → 1**.
 |-----------|---------|---------------|
 | AC1 | `⟨x(t)x(t+Δt)⟩ / Var(x)` ≈ φ | Increases toward 1 |
 | Variance | `σ²/(1 − φ²)` | Increases toward ∞ |
+| Skewness | third standardised moment | \|skewness\| increases |
 | Restoring rate | `λ = log(φ)/Δt` | Increases toward 0 |
 
-All methods in csdtools either estimate **λ** directly or track **AC1** and
-**variance** as proxies.
+All methods in csdtools either estimate **λ** directly or track **AC1**,
+**variance**, and **skewness** as proxies.
 
 ---
 
@@ -127,11 +131,34 @@ result = analyze_timeseries(x, method='ac1', window_size=100)
 The steady-state variance of the OU process is σ²/(1 − φ²).  As φ → 1,
 variance diverges.
 
-**Pros**: Fast, complementary to AC1.  
+**Pros**: Fast, complementary to AC1.
 **Cons**: Sensitive to changes in noise amplitude σ that are not caused by CSD.
 
 ```python
 result = analyze_timeseries(x, method='variance', window_size=100)
+```
+
+---
+
+### Skewness
+
+**Method name**: `'skewness'`
+
+Near a fold (saddle-node) bifurcation the effective potential well becomes
+asymmetric, so the distribution of fluctuations develops a non-zero skew.
+The magnitude of skewness increases as the system approaches the tipping
+point; the sign depends on the direction of the bifurcation.
+
+Computed as the bias-corrected (adjusted Fisher-Pearson) standardised third
+moment, equivalent to `scipy.stats.skew(x, bias=False)`.
+
+**Pros**: Captures asymmetric departures from Gaussianity not reflected in
+AC1 or variance; useful cross-check.
+**Cons**: Higher-order statistic — requires larger windows for reliable
+estimates (≥ 100 samples recommended); sign is not universally predictable.
+
+```python
+result = analyze_timeseries(x, method='skewness', window_size=100)
 ```
 
 ---
@@ -241,16 +268,60 @@ This method makes *no assumption* about the functional form of the noise
 beyond the Markov property, making it valuable when the underlying process
 may deviate from the simple OU model.
 
-**Pros**: Non-parametric; detects nonlinear effects.  
+For **multivariate input** (shape `(n_dims, n_samples)`), the full drift
+Jacobian B is estimated and the dominant (least-negative) real eigenvalue
+is returned.  See [Multivariate Analysis](#6-multivariate-analysis).
+
+**Pros**: Non-parametric; detects nonlinear effects; supports nD input.
 **Cons**: Requires substantially more data (≥ 200 samples recommended);
 requires the `kramersmoyal` package.
 
 ```python
+# Univariate
 result = analyze_timeseries(x, method='lambda_km', dt=1.0,
                             window_size=300, bin_number=50)
+
+# Multivariate — x_nd has shape (n_dims, n_samples)
+result = analyze_timeseries(x_nd, method='lambda_km', window_size=300)
 ```
 
 **References**: Morr & Boers (2024); Morr et al. (2024).
+
+---
+
+### Lambda via DMD
+
+**Method name**: `'lambda_dmd'`
+
+Uses **Dynamic Mode Decomposition** to fit the linear operator A such that
+A·X ≈ Y, where columns of X and Y are consecutive state snapshots.  The
+dominant eigenvalue magnitude is the CSD indicator: it sits in (0, 1) for
+a stable system and increases toward 1 as the system approaches a
+bifurcation.
+
+For **1D input**, a time-delay (Hankel) embedding lifts the scalar series
+into a higher-dimensional state space before fitting DMD.  For **nD input**
+(shape `(n_dims, n_samples)`) the multiple variables form the state directly;
+embedding is applied per dimension if `embedding_dim > 1`.
+
+**CSD signature**: dominant eigenvalue magnitude increases toward 1.
+
+**Pros**: Works on both 1D and nD data with the same interface; captures
+non-normal dynamics; time-delay embedding allows reconstruction of
+attractor geometry from a 1D observable.
+**Cons**: Requires the `pydmd` package; for 1D signals a higher
+`embedding_dim` (e.g. 3–10) is recommended for richer state representation.
+
+```python
+# Univariate with time-delay embedding
+result = analyze_timeseries(x, method='lambda_dmd', window_size=200,
+                            embedding_dim=5, tau=3)
+
+# Multivariate — x_nd has shape (n_dims, n_samples)
+result = analyze_timeseries(x_nd, method='lambda_dmd', window_size=200)
+```
+
+**References**: Smith et al. (2024).
 
 ---
 
@@ -289,18 +360,23 @@ result = analyze_timeseries(x, method='rosa', window_size=100, eta=0.5)
 
 ### Spatial Correlation
 
-Found in `csdtools.spatial`.  Not a time-series indicator in the same sense as
-the above — instead, it quantifies the **spatial correlation length**
-increase predicted by CSD in spatially extended systems.
+**Method name**: `'spatial_corr'`
+
+Quantifies the **spatial correlation length** increase predicted by CSD in
+spatially extended systems.  For each pair of cells (i, j) at distance
+d_{ij}, the Pearson correlation between their time series is computed and
+averaged with weight 1/d_{ij}.
 
 ```python
-from csdtools.spatial import sliding_spatial_correlation, compute_distance_matrix
+from csdtools import analyze_timeseries
+from csdtools.spatial import compute_distance_matrix
 
 D = compute_distance_matrix(lats, lons)   # pairwise km distances
-spc, times = sliding_spatial_correlation(
-    data,           # shape (n_cells, n_time)
-    D,
+result = analyze_timeseries(
+    data,                    # shape (n_cells, n_time)
+    method='spatial_corr',
     window_size=120,
+    distance_matrix=D,
 )
 ```
 
@@ -340,9 +416,10 @@ This installs all required dependencies (`numpy`, `scipy`, `statsmodels`,
 Optional extras for specific methods:
 
 ```bash
-pip install ".[km]"          # adds kramersmoyal  (method='lambda_km')
-pip install ".[spatial]"     # adds pyproj        (spatial.compute_distance_matrix)
-pip install ".[km,spatial]"  # both
+pip install ".[km]"           # adds kramersmoyal  (method='lambda_km')
+pip install ".[dmd]"          # adds pydmd         (method='lambda_dmd')
+pip install ".[spatial]"      # adds pyproj        (spatial.compute_distance_matrix)
+pip install ".[km,dmd,spatial]"  # all optional dependencies
 ```
 
 After installation, `import csdtools` works from any directory.
@@ -417,16 +494,22 @@ highly non-stationary data).
 
 ### Step 3 — Choose an indicator method
 
-| `method=` | What it measures | When to use |
-|---|---|---|
-| `'ac1'` | Lag-1 autocorrelation | Quick first look; widely cited |
-| `'variance'` | Window variance | Complementary to AC1 |
-| `'lambda_glsar'` | Restoring rate via GLS | **Recommended default** |
-| `'lambda_ols'` | Restoring rate via Yule-Walker | Faster alternative to GLSAR |
-| `'lambda_acs'` | Restoring rate via ACF fit | Robust with multiple lags; ≥ 300 pts/window |
-| `'lambda_psd'` | Restoring rate via PSD fit | Full spectral information; ≥ 300 pts/window |
-| `'lambda_km'` | Restoring rate via Kramers-Moyal | Non-parametric; ≥ 300 pts/window |
-| `'rosa'` | Ratio of spectral bands | Robust to some non-stationarities |
+| `method=` | What it measures | Input | When to use |
+|---|---|---|---|
+| `'ac1'` | Lag-1 autocorrelation | 1D | Quick first look; widely cited |
+| `'variance'` | Window variance | 1D | Complementary to AC1 |
+| `'skewness'` | Third standardised moment | 1D | Cross-check for distributional asymmetry |
+| `'lambda_glsar'` | Restoring rate via GLS | 1D | **Recommended default** |
+| `'lambda_ols'` | Restoring rate via Yule-Walker | 1D | Faster alternative to GLSAR |
+| `'lambda_acs'` | Restoring rate via ACF fit | 1D | Robust with multiple lags; ≥ 300 pts/window |
+| `'lambda_psd'` | Restoring rate via PSD fit | 1D | Full spectral information; ≥ 300 pts/window |
+| `'lambda_km'` | Restoring rate via Kramers-Moyal | **1D or nD** | Non-parametric; ≥ 300 pts/window |
+| `'lambda_dmd'` | Dominant DMD eigenvalue magnitude | **1D or nD** | Operator-based; time-delay embedding for 1D |
+| `'rosa'` | Ratio of spectral bands | 1D | Robust to some non-stationarities |
+| `'spatial_corr'` | Distance-weighted spatial correlation | **nD** | Spatially extended systems |
+
+Methods marked **nD** accept a `(n_dims, n_samples)` array as input and are
+suitable for multivariate systems.  See [Multivariate Analysis](#6-multivariate-analysis).
 
 Start with `lambda_glsar` unless you have a specific reason to prefer another.
 Use multiple methods together (Step 7) to assess robustness.
@@ -545,11 +628,12 @@ Robustness across methods strengthens the evidence for CSD:
 ```python
 from csdtools import analyze_timeseries, plot_multi_analysis
 
-# lambda_acs, lambda_psd, and lambda_km need more data per window
-WINDOW_SIZES = {'lambda_acs': 300, 'lambda_psd': 300, 'lambda_km': 300}
+# some methods need more data per window
+WINDOW_SIZES = {'lambda_acs': 300, 'lambda_psd': 300,
+                'lambda_km': 300, 'lambda_dmd': 200}
 
-methods = ['ac1', 'variance', 'lambda_glsar', 'lambda_ols',
-           'lambda_acs', 'lambda_psd', 'rosa', 'lambda_km']
+methods = ['ac1', 'variance', 'skewness', 'lambda_glsar', 'lambda_ols',
+           'lambda_acs', 'lambda_psd', 'rosa', 'lambda_km', 'lambda_dmd']
 
 results = {
     m: analyze_timeseries(
@@ -607,7 +691,67 @@ combine with all methods.
 
 ---
 
-## 6. Full API Reference
+## 6. Multivariate Analysis
+
+Three indicators support a 2D input array of shape `(n_dims, n_samples)`,
+where each row is one variable and each column is one time step:
+
+| Method | nD approach |
+|--------|-------------|
+| `'lambda_km'` | Estimates full drift Jacobian B; returns dominant real eigenvalue |
+| `'lambda_dmd'` | Fits linear operator via DMD; returns dominant eigenvalue magnitude |
+| `'spatial_corr'` | Distance-weighted mean Pearson correlation across cell pairs |
+
+Pass the multivariate array directly to `analyze_timeseries`.  The pipeline
+handles preprocessing per row, windowing along the time axis, and Kendall τ
+exactly as for 1D input.  Note that surrogate significance testing is not
+yet supported for nD input.
+
+```python
+import numpy as np
+from csdtools import analyze_timeseries
+from csdtools.spatial import compute_distance_matrix
+
+# --- Multivariate KM or DMD -------------------------------------------
+# x_nd has shape (n_dims, n_samples)
+result_km = analyze_timeseries(
+    x_nd, method='lambda_km', window_size=300, dt=1.0,
+    detrend='running_mean', detrend_window=600,
+)
+result_dmd = analyze_timeseries(
+    x_nd, method='lambda_dmd', window_size=200,
+    embedding_dim=3,
+)
+print(f"KM  τ = {result_km.kendall_tau:+.3f}")
+print(f"DMD τ = {result_dmd.kendall_tau:+.3f}")
+
+# --- Spatial correlation -----------------------------------------------
+# data has shape (n_cells, n_time)
+D = compute_distance_matrix(lats, lons)   # pairwise km distances
+result_sc = analyze_timeseries(
+    data, method='spatial_corr', window_size=120,
+    distance_matrix=D,
+)
+print(f"Spatial corr τ = {result_sc.kendall_tau:+.3f}")
+```
+
+### Extending with new multivariate indicators
+
+To add a future nD indicator to the pipeline, three steps are needed in
+`csdtools/indicators.py`:
+
+1. Write an estimator function with the signature
+   `f(x, dt=1.0, detrend=True, **kwargs) -> float` where `x` has shape
+   `(n_dims, n_samples)`.
+2. Add it to `INDICATOR_REGISTRY`.
+3. Add its name to `ND_METHODS`.
+
+Everything else — preprocessing, windowing, Kendall τ — is inherited
+automatically.
+
+---
+
+## 7. Full API Reference
 
 ### `analyze_timeseries`
 
@@ -615,7 +759,7 @@ combine with all methods.
 from csdtools import analyze_timeseries
 
 result = analyze_timeseries(
-    x,                    # 1D array-like, required
+    x,                    # 1D array or 2D (n_dims, n_samples) for nD methods
     method='lambda_glsar',  # str, default 'lambda_glsar'
     window_size=100,        # int
     step=1,                 # int; step=1 → maximum overlap
@@ -705,7 +849,7 @@ x_dt = preprocess(x, method='harmonic', order=3, period=12)
 
 ---
 
-## 7. Preprocessing Guide
+## 8. Preprocessing Guide
 
 Choosing the right preprocessing is as important as choosing the right
 indicator.  The goal is to remove slow external forcing that is not
@@ -726,7 +870,7 @@ will be removed; if too large, the preprocessing is insufficient.
 
 ---
 
-## 8. Significance Testing
+## 9. Significance Testing
 
 A positive Kendall τ (increasing indicator trend) does *not* by itself
 confirm CSD — even a stationary process can produce a trend by chance in a
@@ -763,7 +907,7 @@ The surrogate p-value is the **fraction of surrogates** whose Kendall τ is
 
 ---
 
-## 9. Plotting
+## 10. Plotting
 
 The `csdtools.plotting` module (also importable directly from `csdtools`)
 provides three ready-made figure layouts.
@@ -880,25 +1024,28 @@ Each method has a consistent default colour across all plot types:
 |--------|--------|
 | `ac1` | Blue |
 | `variance` | Green |
+| `skewness` | Olive |
 | `lambda_glsar` | Red |
 | `lambda_ols` | Orange |
 | `lambda_acs` | Purple |
 | `lambda_psd` | Teal |
 | `lambda_km` | Brown |
+| `lambda_dmd` | Slate |
 | `rosa` | Pink |
+| `spatial_corr` | Cyan |
 
 Override any colour via the `indicator_color` parameter or the
 `csdtools.plotting.METHOD_COLORS` dictionary.
 
 ---
 
-## 10. Examples
+## 11. Examples
 
 Example scripts are in `csdtools/examples/`:
 
 | Script | Description |
 |--------|-------------|
-| `basic_analysis.py` | Run all 8 methods on a synthetic CSD series, compare Kendall τ values, test significance. |
+| `basic_analysis.py` | Run all univariate methods on a synthetic CSD series, compare Kendall τ values, test significance. |
 | `significance_testing.py` | Compare null distributions for CSD vs stationary series; visualise surrogate histograms. |
 
 Run from the `CSDTools` directory:
@@ -910,11 +1057,18 @@ python -m csdtools.examples.significance_testing
 
 ### All-methods comparison
 
-The multi-method plot shows the original time series (top) alongside all 8
+The multi-method plot shows the original time series (top) alongside all 9
 CSD indicators in stacked panels, each with a Theil-Sen trend line and
 annotated Kendall τ / p-value.
 
 ![All-methods comparison](docs/csd_basic_multi.png)
+
+### Single-method plot with significance
+
+The single-method plot shows the time series (top) and the λ (GLSAR) indicator
+(bottom) with the Theil-Sen trend line and a Kendall τ / p-value annotation.
+
+![Single-method plot](docs/csd_basic_single.png)
 
 ### Surrogate significance test
 
@@ -924,9 +1078,18 @@ null distribution, confirming a statistically significant trend.
 
 ![Surrogate null distribution](docs/csd_basic_significance.png)
 
+### Multivariate analysis
+
+The multivariate plot shows a 2D coupled AR(1) time series (top) alongside
+all three nD indicators — Kramers-Moyal drift Jacobian, DMD eigenvalue
+magnitude, and spatial correlation — each with a Theil-Sen trend line and
+annotated Kendall τ / p-value.
+
+![Multivariate CSD analysis](docs/csd_multivariate.png)
+
 ---
 
-## 11. References
+## 12. References
 
 Clarke, J., Huntingford, C., Ritchie, P., & Cox, P. (2023).
 Seeking more robust early warning signals for climate tipping points:
@@ -963,6 +1126,10 @@ Blaschke, L., Morr, A., & Boers, N. (2024).
 Spatial Correlation Increase in Single-Sensor Satellite Data Reveals Loss
 of Amazon Rainforest Resilience.
 *Nature* (preprint).
+
+Smith, M. J., et al. (2024).
+Dynamic Mode Decomposition as an early warning signal for tipping points.
+*preprint*.
 
 Rietkerk, M., et al. (2025).
 Ambiguity of early warning signals.

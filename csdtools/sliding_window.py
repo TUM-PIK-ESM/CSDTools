@@ -34,8 +34,12 @@ def sliding_window_analysis(
 
     Parameters
     ----------
-    x : np.ndarray, shape (n,)
-        1D time series, already globally preprocessed if desired.
+    x : np.ndarray, shape (n,) or (n_dims, n)
+        Time series, already globally preprocessed if desired.  Pass a 1D
+        array for univariate analysis or a 2D array of shape
+        ``(n_dims, n_samples)`` for multivariate analysis.  Multivariate
+        input is only supported by ``'lambda_km'``; windows are sliced along
+        the time axis (axis 1).
     method : str
         CSD indicator method from :data:`~csdtools.indicators.AVAILABLE_METHODS`.
     window_size : int
@@ -52,7 +56,8 @@ def sliding_window_analysis(
         that may leave residual slow variations.
     min_valid_fraction : float
         Minimum fraction of non-NaN values required in a window.
-        Windows below this threshold are assigned NaN.
+        Windows below this threshold are assigned NaN.  For multivariate
+        input this fraction is evaluated over all elements of the window.
     **method_kwargs
         Extra keyword arguments forwarded to :func:`~csdtools.indicators.compute_indicator`
         and then to the specific estimator function.  Pass
@@ -69,16 +74,19 @@ def sliding_window_analysis(
     Raises
     ------
     ValueError
-        If ``window_size >= len(x)``.
+        If ``window_size >= n_samples``.
 
     Examples
     --------
     >>> ind, t = sliding_window_analysis(x, method='ac1', window_size=100)
     >>> ind, t = sliding_window_analysis(x, 'lambda_acs', 150, step=5,
     ...                                  max_lag=25)
+    >>> # multivariate: x_nd has shape (n_dims, n_samples)
+    >>> ind, t = sliding_window_analysis(x_nd, 'lambda_km', window_size=300)
     """
     x = np.asarray(x, dtype=float)
-    n = len(x)
+    multivariate = x.ndim == 2
+    n = x.shape[1] if multivariate else len(x)
 
     if method not in AVAILABLE_METHODS:
         raise ValueError(
@@ -107,7 +115,7 @@ def sliding_window_analysis(
     times = starts + window_size // 2  # midpoint of each window
 
     for k, i in enumerate(starts):
-        window = x[i : i + window_size]
+        window = x[:, i : i + window_size] if multivariate else x[i : i + window_size]
         # Skip windows with too many missing values
         if np.mean(np.isfinite(window)) < min_valid_fraction:
             continue

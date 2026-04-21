@@ -64,11 +64,12 @@ empirical
 from __future__ import annotations
 
 import dataclasses
+import warnings
 from typing import Optional
 
 import numpy as np
 
-from .indicators import AVAILABLE_METHODS, compute_indicator
+from .indicators import AVAILABLE_METHODS, ND_METHODS, compute_indicator
 from .preprocessing import preprocess
 from .sliding_window import sliding_window_analysis
 from .significance import significance_test
@@ -82,6 +83,7 @@ __all__ = [
     "analyze_timeseries",
     "CSDResult",
     "AVAILABLE_METHODS",
+    "ND_METHODS",
     "preprocess",
     "compute_indicator",
     "significance_test",
@@ -153,7 +155,7 @@ def analyze_timeseries(
     **method_kwargs,
 ) -> CSDResult:
     """
-    Full CSD analysis pipeline for a 1D time series.
+    Full CSD analysis pipeline for a univariate or multivariate time series.
 
     This is the main user-facing function.  It:
 
@@ -164,8 +166,11 @@ def analyze_timeseries(
 
     Parameters
     ----------
-    x : array-like, shape (n,)
-        Input time series.
+    x : array-like, shape (n,) or (n_dims, n_samples)
+        Input time series.  Pass a 1D array for univariate analysis or a 2D
+        array of shape ``(n_dims, n_samples)`` for multivariate analysis.
+        Multivariate input is only supported by ``method='lambda_km'``; global
+        preprocessing and significance testing are applied per dimension.
     method : str
         CSD indicator to use.  Choose from :data:`AVAILABLE_METHODS`:
 
@@ -289,18 +294,51 @@ def analyze_timeseries(
     >>> for m in ['ac1', 'variance', 'lambda_glsar']:
     ...     r = analyze_timeseries(x, method=m, window_size=100)
     ...     print(f"{m:15s}  τ={r.kendall_tau:+.3f}")
+
+    Multivariate KM analysis (x_nd has shape (n_dims, n_samples)):
+
+    >>> result = analyze_timeseries(
+    ...     x_nd, method='lambda_km', window_size=300, dt=1.0
+    ... )
+    >>> print(result.kendall_tau)
     """
     x = np.asarray(x, dtype=float)
+
+    if x.ndim > 2:
+        raise ValueError(
+            f"Input must be 1D or 2D, got shape {x.shape}."
+        )
+
+    multivariate = x.ndim == 2
 
     if method not in AVAILABLE_METHODS:
         raise ValueError(
             f"Unknown method '{method}'. Choose from: {AVAILABLE_METHODS}"
         )
 
-    # --- NaN handling (before any preprocessing) -------------------------
-    # strip_nans emits a UserWarning if NaNs are present; stacklevel=2 makes
-    # the warning point at the user's analyze_timeseries() call site.
-    x = strip_nans(x, exclude_neighbors=exclude_nan_neighbors, stacklevel=2)
+    if multivariate and method not in ND_METHODS:
+        raise ValueError(
+            f"Multivariate input (shape {x.shape}) is only supported by "
+            f"multivariate methods: {sorted(ND_METHODS)}."
+        )
+
+    # --- NaN handling ---------------------------------------------------
+    if multivariate:
+        # Drop time steps where any dimension is non-finite
+        valid = np.all(np.isfinite(x), axis=0)
+        n_dropped = int((~valid).sum())
+        if n_dropped > 0:
+            warnings.warn(
+                f"Input contains {n_dropped} time step(s) with NaN/Inf in at "
+                "least one dimension; those steps will be removed.",
+                UserWarning,
+                stacklevel=2,
+            )
+            x = x[:, valid]
+    else:
+        # strip_nans emits a UserWarning if NaNs are present; stacklevel=2
+        # makes the warning point at the user's analyze_timeseries() call site.
+        x = strip_nans(x, exclude_neighbors=exclude_nan_neighbors, stacklevel=2)
 
     # --- Global preprocessing -------------------------------------------
     preprocess_kwargs = method_kwargs.pop("preprocess_kwargs", {})
@@ -312,7 +350,16 @@ def analyze_timeseries(
     elif detrend in ("stl", "harmonic"):
         detrend_kw.update(preprocess_kwargs)
 
-    x_proc = preprocess(x, method=detrend, **detrend_kw)
+    if multivariate:
+        if detrend is not None:
+            x_proc = np.stack(
+                [preprocess(x[i], method=detrend, **detrend_kw)
+                 for i in range(x.shape[0])]
+            )
+        else:
+            x_proc = x.copy()
+    else:
+        x_proc = preprocess(x, method=detrend, **detrend_kw)
 
     # --- Sliding-window indicator ----------------------------------------
     indicator, times = sliding_window_analysis(
@@ -326,16 +373,26 @@ def analyze_timeseries(
     surr_p: Optional[float] = None
     surr_taus: Optional[np.ndarray] = None
     if significance:
-        _, surr_p, surr_taus = significance_test(
-            x_proc,
-            method,
-            window_size,
-            step,
-            dt,
-            local_detrend,
-            n_surrogates=n_surrogates,
-            **method_kwargs,
-        )
+        if multivariate:
+            warnings.warn(
+                "Significance testing via Fourier surrogates is not supported "
+                "for multivariate input (nD surrogate generation would need to "
+                "preserve the cross-spectral structure). "
+                "surrogate_p_value will be None.",
+                UserWarning,
+                stacklevel=2,
+            )
+        else:
+            _, surr_p, surr_taus = significance_test(
+                x_proc,
+                method,
+                window_size,
+                step,
+                dt,
+                local_detrend,
+                n_surrogates=n_surrogates,
+                **method_kwargs,
+            )
 
     return CSDResult(
         indicator=indicator,
