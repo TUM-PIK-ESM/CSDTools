@@ -21,6 +21,9 @@ Lana Blaschke's empirical detection methods (lana/empirical_detection.py).
 Only 
 
 Originally from Smith et al. (2022). Empirical evidence for recent global shifts in vegetation resilience. Nature Climate Change.
+
+-------
+checked by Lana on 2026-05-19
 """
 
 from curses import raw

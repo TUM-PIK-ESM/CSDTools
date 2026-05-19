@@ -18,6 +18,10 @@ Satellite Data Reveals Loss of Amazon Rainforest Resilience.
 
 Rietkerk et al. (2021). Evasion of tipping in complex systems through
 spatial heterogeneity. *Science*.
+
+
+-------
+checked by Lana on 2026-05-19
 """
 
 import numpy as np
@@ -61,24 +65,12 @@ def spatial_correlation(
     """
     n_cells = data.shape[0]
     # Pearson correlation matrix across all cells
-    corr = np.corrcoef(data)   # shape (n_cells, n_cells)
+    corr = np.corrcoef(data, data, rowvar=False, axis=0)[:n_cells, n_cells:]   # shape (n_cells, n_cells)
+    distance_matrix = distance_matrix.where(distance_matrix>min_dist, np.nan)  # must be exclusively larger to exclude correlation of cell with itself
+    distance_matrix = distance_matrix.where(distance_matrix<=max_dist, np.nan)
+    return np.nanmean(corr, where=distance_matrix, axis=0)
+    
 
-    total_w = 0.0
-    weighted_sum = 0.0
-    for i in range(n_cells):
-        for j in range(i + 1, n_cells):
-            d = distance_matrix[i, j]
-            if d <= min_dist:
-                continue
-            if max_dist is not None and d > max_dist:
-                continue
-            w = 1.0 / (d + 1e-12)
-            weighted_sum += w * corr[i, j]
-            total_w += w
-
-    if total_w == 0.0:
-        return np.nan
-    return float(weighted_sum / total_w)
 
 
 def compute_distance_matrix(

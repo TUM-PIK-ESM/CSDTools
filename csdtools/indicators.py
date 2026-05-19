@@ -146,11 +146,16 @@ def estimate_ac1(
     -------
     float
         Pearson correlation coefficient between lag-0 and lag-1 values.
+
+    -------
+    checked by Lana on 2026-05-19
     """
+    import statsmodels.api as sm
+
     x = _prep(x, detrend)
     if len(x) < 4:
         return np.nan
-    return float(np.corrcoef(x[:-1], x[1:])[0, 1])
+    return sm.tsa.acf(x,nlags=1)[1]
 
 
 def estimate_variance(
@@ -178,6 +183,8 @@ def estimate_variance(
     -------
     float
         Sample variance (ddof=1).
+    -------
+    checked by Lana on 2026-05-19
     """
     x = _prep(x, detrend)
     return float(np.var(x, ddof=1))
@@ -231,6 +238,59 @@ def estimate_skewness(
 # Lambda estimators — parametric
 # ---------------------------------------------------------------------------
 
+def estimate_a_glsar(
+    x: np.ndarray,
+    dt: float = 1.0,
+    detrend: bool = True,
+) -> float:
+    """
+    Slope of Generalised Least Squares AR(1) (GLSAR).
+
+    Fits the regression x(t) = φ·x(t−1) + ε(t) using Generalised Least Squares with an AR(1) noise model.
+
+    GLS is preferred over plain OLS because the regression residuals are
+    themselves autocorrelated; ignoring this leads to underestimated φ.
+    The iterative GLSAR procedure corrects for this bias.
+
+    **CSD signature**: a increases toward 0.
+
+    Parameters
+    ----------
+    x : array-like
+        Pre-processed window (≥ 30 samples recommended).
+    dt : float
+        Physical time step (determines the units of the returned λ).
+    detrend : bool
+        Remove linear trend within window.
+
+    Returns
+    -------
+    float
+        Continuous-time restoring rate λ (negative for stable systems).
+
+    References
+    ----------
+    Held & Kleinen (2004); Dakos et al. (2008); Boers (2021). Ben-Yami et al (2024). Blaschke et al (submitted)
+    
+    -------
+    checked by Lana on 2026-05-19
+    """
+    import statsmodels.api as sm
+
+    x = _prep(x, detrend)
+    dx = x[1:] - x[:-1]
+    x = sm.add_constant(x)
+
+    if len(x) < 6 or np.var(x) == 0:
+        return np.nan
+    try:
+        model = sm.GLSAR(endog=dx, exog=x[:-1]*dt, rho=1)
+        result = model.iterative_fit(maxiter=10, rtol=1e-4)
+        phi = float(result.params[1])
+        return phi
+    except Exception:
+        return np.nan
+
 def estimate_lambda_glsar(
     x: np.ndarray,
     dt: float = 1.0,
@@ -239,7 +299,7 @@ def estimate_lambda_glsar(
     """
     Restoring rate via Generalised Least Squares AR(1) (GLSAR).
 
-    Fits the regression x(t) = φ·x(t−1) + ε(t) using Generalised Least
+    Fits the regression dx = φ·x·dt + ε(t) using Generalised Least
     Squares with an AR(1) noise model and computes λ = log(φ)/Δt.
 
     GLS is preferred over plain OLS because the regression residuals are
@@ -264,20 +324,26 @@ def estimate_lambda_glsar(
 
     References
     ----------
-    Held & Kleinen (2004); Dakos et al. (2008); Boers (2021).
+    Held & Kleinen (2004); Dakos et al. (2008); Boers (2021). Ben-Yami et al (2024). Blaschke et al (submitted)
+    
+    -------
+    checked by Lana on 2026-05-19
     """
     import statsmodels.api as sm
 
     x = _prep(x, detrend)
+    dx = x[1:] - x[:-1]
+    x = sm.add_constant(x)
+
     if len(x) < 6 or np.var(x) == 0:
         return np.nan
     try:
-        model = sm.GLSAR(x[1:], x[:-1], rho=1)
-        result = model.iterative_fit(maxiter=20, rtol=1e-4)
-        phi = float(result.params[0])
-        if phi <= 0 or not np.isfinite(phi):
+        model = sm.GLSAR(endog=dx, exog=x[:-1]*dt, rho=1)
+        result = model.iterative_fit(maxiter=10, rtol=1e-4)
+        phi = float(result.params[1])
+        if phi <= -1 or not np.isfinite(phi):
             return np.nan
-        return np.log(phi) / dt
+        return np.log(phi+1) / dt
     except Exception:
         return np.nan
 
@@ -311,6 +377,9 @@ def estimate_lambda_ols(
     -------
     float
         Continuous-time restoring rate λ.
+    
+    -------
+    @Maya, @Andreas, I did have some OLS code (which I never really used though) but its not that, so I thought I best do not change anything here
     """
     x = _prep(x, detrend)
     if len(x) < 4 or np.var(x) == 0:
@@ -513,6 +582,9 @@ def estimate_lambda_km(
     References
     ----------
     Morr & Boers (2024); Morr et al. (2024).
+
+    ----------
+    @Andreas, I have not fully checked it but 1d version seems to be the same as what my code does.
     """
     x = np.asarray(x, dtype=float).copy()
 
