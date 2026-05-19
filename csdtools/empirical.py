@@ -17,8 +17,13 @@ The module provides:
 
 References
 ----------
-Lana Blaschke's empirical detection methods (lana/empirical_detection.py).
+Lana Blaschke's empirical detection methods (lana/empirical_detection.py). 
+Only 
+
+Originally from Smith et al. (2022). Empirical evidence for recent global shifts in vegetation resilience. Nature Climate Change.
 """
+
+from curses import raw
 
 import numpy as np
 from typing import Optional, List, Dict, Any
@@ -43,7 +48,7 @@ def detect_transitions(
     x : np.ndarray
         1D time series.
     window_size : int
-        Savitzky-Golay filter window length.  Smaller values are more
+        For rough derivative estimation. Smaller values are more
         sensitive to rapid changes; larger values are more robust to noise.
     percentile : float
         Threshold percentile of the derivative distribution.  Higher values
@@ -55,21 +60,27 @@ def detect_transitions(
         Indices at which transitions are detected.
     """
     x = np.asarray(x, dtype=float)
+    ln = x.shape[0]
+    half_window = int(window_size / 2)
+    # 1. Create rough "derivative"
+    av_derivative = [np.nanmean(x[i - half_window : i]) - np.nanmean(x[i : i + half_window]) for i in range(half_window, ln-half_window)] 
+    av_derivative = np.array(av_derivative)
     # Savitzky-Golay requires an odd window length
-    wl = window_size if window_size % 2 == 1 else window_size + 1
-    wl = min(wl, len(x) - 2)
-    if wl < 5:
-        return np.array([], dtype=int)
-
-    deriv = signal.savgol_filter(x, window_length=wl, polyorder=3, deriv=1)
-    threshold = np.percentile(np.abs(deriv), percentile)
-    return np.where(np.abs(deriv) >= threshold)[0]
+    av_derivative = signal.savgol_filter(av_derivative, window_length=7, polyorder=1, deriv=0)
+    av_derivative = np.array([np.nan]*half_window + list(av_derivative) + [np.nan] * half_window)
+    threshold = np.percentile(np.abs(av_derivative), percentile)
+    av_derivative[av_derivative >= np.nanpercentile(av_derivative, percentile)] = 1
+    # Find relative maxima in the masked derivative array
+    transition_times = signal.argrelmax(av_derivative, order=1)[0] 
+    return transition_times
 
 
 def fit_exponential_recovery(
-    x: np.ndarray,
+    draw: np.ndarray,
+    ddetr: np.ndarray,
     transition_idx: int,
     n_local_min: int = 8,
+    recovery_window: Optional[int] = 3*12,
 ) -> Optional[Dict[str, Any]]:
     """
     Fit an exponential recovery curve after a detected transition.
@@ -87,13 +98,18 @@ def fit_exponential_recovery(
 
     Parameters
     ----------
-    x : np.ndarray
-        Full time series (not just the post-transition part).
+    draw : np.ndarray
+        Full time series BEFORE detrending and deseasoning.
+    ddetr : np.ndarray
+        Detrended and deseasoned time series.
     transition_idx : int
         Index of the detected transition (start of recovery window).
     n_local_min : int
         Number of local minima to search in the post-transition segment.
         The recovery is fitted up to the n_local_min-th local minimum.
+        n_local_min << recovery window size to ensure there is data left for fitting.
+    recovery_window : Optional[int]
+        The window size for the recovery period in number of datapoints (default = 36 being 3 years for monthly data)
 
     Returns
     -------
@@ -113,55 +129,79 @@ def fit_exponential_recovery(
 
         Returns ``None`` if the fit fails or the window is too short.
     """
-    x = np.asarray(x, dtype=float)
-    post = x[transition_idx:]
-    if len(post) < 10:
-        return None
 
-    # Locate local minima in the post-transition segment
-    local_mins = signal.argrelmin(post, order=3)[0]
-    if len(local_mins) == 0:
-        return None
+    # Safety: Ensure alignment
+    if not (len(ddetr) == len(draw)):
+        raise ValueError("detrended and raw must have the same length.")
+    
+    end_date  = transition_idx + recovery_window
+    if end_date >= len(draw):
+        return None  # Not enough data after transition for fitting
+    prev_date = transition_idx - recovery_window    
+    if prev_date < 0:
+        return None  # Not enough data before transition for baseline estimation
 
-    # Use up to the n_local_min-th local minimum
-    min_idx = local_mins[min(n_local_min - 1, len(local_mins) - 1)]
-    recovery = post[: min_idx + 1]
-    if len(recovery) < 4:
-        return None
+    # Mask post-transition period for fitting
+    fitting     = ddetr[transition_idx:end_date].copy()
+    fitting_raw = draw[transition_idx:end_date].copy()
 
-    t_rec = np.arange(len(recovery), dtype=float)
-    x_baseline = float(np.mean(recovery[-3:]))
 
-    def model(t, A, lam):
-        return x_baseline + A * np.exp(lam * t)
-
+    #Add KS Statistic: we want the system to recover to the old state
+    pre_fitting_raw = draw[prev_date:transition_idx]
     try:
-        p0 = [recovery[0] - x_baseline, -0.05]
-        popt, _ = optimize.curve_fit(
-            model, t_rec, recovery, p0=p0, maxfev=4000
-        )
-        residuals = recovery - model(t_rec, *popt)
-        ss_res = np.sum(residuals**2)
-        ss_tot = np.sum((recovery - np.mean(recovery))**2)
-        r_sq = 1.0 - ss_res / (ss_tot + 1e-20)
+        ks, pval = ks_2samp(pre_fitting_raw, fitting_raw)
+    except:
+        ks, pval = np.nan, np.nan
 
+
+    # Find the closest local minima to start the fitting from
+    armin = np.nanargmin(fitting[:n_local_min])
+    fitting_min = fitting[armin:]
+    fitting_min = fitting_min - np.nanmean(fitting_min) # make sure mean is 0, however, one might to change this to ensure the system RECOVERS to zero, not having a zero mean
+
+    # See how far the data drops during the transition (to catch spurious transitions)
+    raw_drop = fitting_raw[0] - fitting_raw[armin]
+
+    def exp_model(t, A, lam):
+        return A * np.exp(lam * t)
+    def exp_jacobian(t, a, b):
+        # jacobian (partial derivates) for faster and more stable fitting
+        jac = np.array([np.exp(b*t), a*t*np.exp(b*t)]).T
+        return jac
+    
+    try:
+        trange = np.arange(fitting_min.shape[0])
+        p0 = [fitting_min[0], -0.05]  # Initial guess: [a, lam]
+        bounds = ([-np.inf,-np.inf], [0, 0]) # [min a, min lam], [max a, max lam]
+
+        popt, _ = optimize.curve_fit(exp_model, trange, fitting_min, p0=p0, jac=exp_jacobian, bounds=bounds)
+        resid   = fitting_min - exp_model(trange, *popt)
+        ss_res = np.sum(resid**2)
+        ss_tot = np.sum((fitting_min - np.mean(fitting_min))**2)
+        r_sq = 1.0 - ss_res / (ss_tot + 1e-20) # for stability in case of zero variance
         return {
             "lambda_empirical": float(popt[1]),
             "amplitude": float(popt[0]),
             "r_squared": float(r_sq),
             "transition_idx": int(transition_idx),
-            "recovery_end_idx": int(transition_idx + min_idx),
+            "fit_start_idx": int(transition_idx + armin),
+            "KS": float(ks),
+            "KS_pval": float(pval),
+            "raw_drop": float(raw_drop),
         }
-    except Exception:
+    except Exception as e:
+        print("Curve fitting failed:", e)
         return None
 
 
 def empirical_recovery_rate(
-    x: np.ndarray,
+    ddetr: np.ndarray,
+    draw: np.ndarray,
     window_size: int = 100,
     transition_percentile: float = 99.0,
     n_local_min: int = 8,
     min_r_squared: float = 0.5,
+    raw_drop_min: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
     Detect transitions and estimate empirical recovery rates.
@@ -172,8 +212,10 @@ def empirical_recovery_rate(
 
     Parameters
     ----------
-    x : np.ndarray
-        1D time series.
+    ddetr: np.ndarray
+        1D time series (detrended and deseasoned).
+    draw: np.ndarray
+        Raw time series (before detrending/deseasoning), needed for fitting and to check the drop magnitude.
     window_size : int
         Savitzky-Golay window for derivative estimation.
     transition_percentile : float
@@ -196,18 +238,23 @@ def empirical_recovery_rate(
     >>> for r in results:
     ...     print(f"λ_emp = {r['lambda_empirical']:.3f}, R² = {r['r_squared']:.3f}")
     """
-    x = np.asarray(x, dtype=float)
-    transitions = detect_transitions(x, window_size, transition_percentile)
+    ddetr = np.asarray(ddetr, dtype=float)
+    draw  = np.asarray(draw, dtype=float)
+    transitions = detect_transitions(ddetr, window_size, transition_percentile)
 
+    if raw_drop_min is None:
+        raw_drop_min = 0.1 * np.float64(draw.std().values) # 0.1 of ra
     results = []
     used = set()
     for idx in transitions:
         # Avoid fitting overlapping recovery windows
         if any(abs(idx - u) < window_size // 2 for u in used):
             continue
-        fit = fit_exponential_recovery(x, idx, n_local_min)
-        if fit is not None and fit["r_squared"] >= min_r_squared:
-            results.append(fit)
-            used.add(idx)
+        fit = fit_exponential_recovery(ddetr, draw, idx, n_local_min)
+        if fit is not None: 
+            if fit["raw_drop"] >= raw_drop_min and fit["KS_pval"] > 0.05 and fit["lambda_empirical"] > -3: # additional criteria to filter out spurious transitions 
+                results.append(fit)
+                used.add(idx)
 
     return sorted(results, key=lambda d: d["r_squared"], reverse=True)
+
