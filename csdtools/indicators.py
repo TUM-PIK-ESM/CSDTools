@@ -51,8 +51,8 @@ RECOMMENDED_MIN_WINDOW: dict = {
     "skewness":     30,   # third moment needs enough samples to be reliable
     "lambda_glsar": 50,   # GLS iteration needs enough data to converge
     "lambda_ols":   30,   # Yule-Walker estimator stabilises around 30
-    "lambda_acs":   50,   # ACF must be estimated reliably at multiple lags
-    "lambda_psd":   30,   # periodogram needs adequate frequency resolution
+    "lambda_acs":   100,   # ACF must be estimated reliably at multiple lags
+    "lambda_psd":   100,   # periodogram needs adequate frequency resolution
     "lambda_km":    100,  # non-parametric KM needs many samples; 200+ ideal
     "rosa":         30,   # spectral ratio needs adequate frequency resolution
     "lambda_dmd":   50,   # DMD needs enough snapshots to resolve the operator
@@ -75,9 +75,9 @@ _MIN_WINDOW_REASON: dict = {
         "The Yule-Walker AR(1) estimate stabilises around ~30 samples.",
     "lambda_acs":
         "Fitting the autocorrelation structure requires reliable ACF estimates "
-        "at multiple lags; ~50 samples is the practical minimum.",
+        "at multiple lags; ~100 samples is the practical minimum.",
     "lambda_psd":
-        "The periodogram has poor frequency resolution below ~30 samples, "
+        "The periodogram has poor frequency resolution below ~100 samples, "
         "making spectral fitting unreliable.",
     "lambda_km":
         "Non-parametric Kramers-Moyal estimation requires kernel density "
@@ -145,7 +145,7 @@ def estimate_ac1(
     Returns
     -------
     float
-        Pearson correlation coefficient between lag-0 and lag-1 values.
+        Empirical lag-1 autocorrelation.
 
     -------
     checked by Lana on 2026-05-19
@@ -220,7 +220,7 @@ def estimate_skewness(
     Returns
     -------
     float
-        Adjusted skewness coefficient.  Sign depends on bifurcation type.
+        Adjusted skewness coefficient.
     """
     x = _prep(x, detrend)
     n = len(x)
@@ -252,7 +252,7 @@ def estimate_a_glsar(
     themselves autocorrelated; ignoring this leads to underestimated φ.
     The iterative GLSAR procedure corrects for this bias.
 
-    **CSD signature**: a increases toward 0.
+    **CSD signature**: a increases toward 1.
 
     Parameters
     ----------
@@ -266,11 +266,7 @@ def estimate_a_glsar(
     Returns
     -------
     float
-        Continuous-time restoring rate λ (negative for stable systems).
-
-    References
-    ----------
-    Held & Kleinen (2004); Dakos et al. (2008); Boers (2021). Ben-Yami et al (2024). Blaschke et al (submitted)
+        Generalized AR(1) parameter φ (between 0 and 1 for stable systems).
     
     -------
     checked by Lana on 2026-05-19
@@ -321,29 +317,17 @@ def estimate_lambda_glsar(
     -------
     float
         Continuous-time restoring rate λ (negative for stable systems).
-
-    References
-    ----------
-    Held & Kleinen (2004); Dakos et al. (2008); Boers (2021). Ben-Yami et al (2024). Blaschke et al (submitted)
     
     -------
     checked by Lana on 2026-05-19
     """
-    import statsmodels.api as sm
-
-    x = _prep(x, detrend)
-    dx = x[1:] - x[:-1]
-    x = sm.add_constant(x)
-
-    if len(x) < 6 or np.var(x) == 0:
-        return np.nan
+    # Delegate the GLSAR slope estimation to estimate_a_glsar and convert
+    # the returned slope (phi) to a continuous-time restoring rate λ.
     try:
-        model = sm.GLSAR(endog=dx, exog=x[:-1]*dt, rho=1)
-        result = model.iterative_fit(maxiter=10, rtol=1e-4)
-        phi = float(result.params[1])
-        if phi <= -1 or not np.isfinite(phi):
+        phi = estimate_a_glsar(x, dt=dt, detrend=detrend)
+        if phi is None or np.isnan(phi) or phi <= -1 or not np.isfinite(phi):
             return np.nan
-        return np.log(phi+1) / dt
+        return np.log(phi + 1) / dt
     except Exception:
         return np.nan
 
@@ -488,7 +472,7 @@ def estimate_lambda_psd(
 
     References
     ----------
-    Morr & Boers (2024); Morr et al. (2024).
+    Morr & Boers (2024).
     """
     from scipy import optimize, signal
 
@@ -581,7 +565,7 @@ def estimate_lambda_km(
 
     References
     ----------
-    Morr & Boers (2024); Morr et al. (2024).
+    Morr et al. (2024).
 
     ----------
     @Andreas, I have not fully checked it but 1d version seems to be the same as what my code does.
