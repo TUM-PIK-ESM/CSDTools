@@ -14,6 +14,8 @@ several methods into a single, consistent API.
    - [Lag-1 Autocorrelation (AC1)](#lag-1-autocorrelation-ac1)
    - [Variance](#variance)
    - [Skewness](#skewness)
+   - [Lambda via AC1](#lambda-via-ac1)
+   - [Lambda via Variance](#lambda-via-variance)
    - [Lambda via GLSAR](#lambda-via-glsar)
    - [Lambda via OLS](#lambda-via-ols)
    - [Lambda via ACS](#lambda-via-acs)
@@ -163,6 +165,54 @@ result = analyze_timeseries(x, method='skewness', window_size=100)
 
 ---
 
+### Lambda via AC1
+
+**Method name**: `'lambda_ac1'`
+
+Converts the Pearson lag-1 autocorrelation coefficient φ directly to a
+continuous-time restoring rate via `λ = log(φ)/Δt`.  φ is computed as the
+Pearson correlation between consecutive pairs `x[t]` and `x[t+1]`.
+
+This is the simplest parametric λ estimator.  Unlike `lambda_ols` (which uses
+the Yule-Walker covariance ratio), this uses the normalised Pearson correlation
+and is therefore bounded between −1 and 1.  For a stationary AR(1) process the
+two estimators are asymptotically equivalent.
+
+**Pros**: Extremely fast; interpretable; directly tied to the AC1 indicator.
+**Cons**: Uses only one lag; slightly noisier than multi-lag estimators.
+
+```python
+result = analyze_timeseries(x, method='lambda_ac1', window_size=100)
+```
+
+---
+
+### Lambda via Variance
+
+**Method name**: `'lambda_var'`
+
+Estimates λ from the ratio of the OLS residual noise variance to the stationary
+variance.  For a stable OU process with per-step noise variance σ²_noise and
+stationary variance V:
+
+```
+λ = (1/2) · log(1 − σ²_noise / V) / Δt
+```
+
+σ²_noise is obtained from the residuals of the OLS regression
+`dx = λ_step · x[t] + ε`.
+
+**Pros**: Independent of the autocorrelation structure; complementary to
+AC1-based estimators.
+**Cons**: Sensitive to variance changes caused by noise amplitude shifts rather
+than CSD; requires that σ²_noise < V (not guaranteed in very short windows).
+
+```python
+result = analyze_timeseries(x, method='lambda_var', window_size=100)
+```
+
+---
+
 ### Lambda via GLSAR
 
 **Method name**: `'lambda_glsar'`  *(recommended default)*
@@ -182,7 +232,7 @@ this leads to a downward bias in φ.
 result = analyze_timeseries(x, method='lambda_glsar', dt=1.0, window_size=100)
 ```
 
-**References**: Held & Kleinen (2004); Dakos et al. (2008); Boers (2021).
+**References**: [Held & Kleinen (2004)][Held2004]; [Dakos et al. (2008)][Dakos2008]; [Boers (2021)][Boers2021].
 
 ---
 
@@ -226,7 +276,7 @@ result = analyze_timeseries(x, method='lambda_acs', window_size=300,
                             max_lag=20)
 ```
 
-**References**: Morr & Boers (2024).
+**References**: [Morr & Boers (2024)][Morr2024a].
 
 ---
 
@@ -234,25 +284,20 @@ result = analyze_timeseries(x, method='lambda_acs', window_size=300,
 
 **Method name**: `'lambda_psd'`
 
-Fits the **theoretical power spectral density** of the OU process:
-
-```
-S(f) = 2σ² / (λ² + (2πf)²)
-```
-
-to the periodogram of each window using log-space least squares.  Fitting
-in log-space is robust to the heavy-tailed distribution of periodogram
-ordinates.
+Fits a two-mode discrete-time PSD model to the band-averaged log-periodogram.
+The theoretical spectrum has poles at exp(−λ) and exp(−θ); the dominant
+(smallest) rate is returned as the restoring-rate estimate.  Band averaging
+with 10 bins per band is applied before fitting to reduce periodogram noise.
 
 **Pros**: Uses all available frequency information; independent of
-time-domain autocorrelation estimates.  
+time-domain autocorrelation estimates.
 **Cons**: Sensitive to spectral leakage; ≥ 300 samples recommended for reliable fits.
 
 ```python
 result = analyze_timeseries(x, method='lambda_psd', window_size=300)
 ```
 
-**References**: Morr & Boers (2024); Morr et al. (2024).
+**References**: [Morr & Boers (2024)][Morr2024a]; [Morr et al. (2024)][Morr2024b].
 
 ---
 
@@ -285,7 +330,7 @@ result = analyze_timeseries(x, method='lambda_km', dt=1.0,
 result = analyze_timeseries(x_nd, method='lambda_km', window_size=300)
 ```
 
-**References**: Morr & Boers (2024); Morr et al. (2024).
+**References**: [Morr & Boers (2024)][Morr2024a]; [Morr et al. (2024)][Morr2024b].
 
 ---
 
@@ -321,7 +366,7 @@ result = analyze_timeseries(x, method='lambda_dmd', window_size=200,
 result = analyze_timeseries(x_nd, method='lambda_dmd', window_size=200)
 ```
 
-**References**: Smith et al. (2024).
+**References**: [Smith et al. (2026)][Smith2026].
 
 ---
 
@@ -354,7 +399,7 @@ fitting; computationally efficient.
 result = analyze_timeseries(x, method='rosa', window_size=100, eta=0.5)
 ```
 
-**References**: Clarke et al. (2023).
+**References**: [Clarke et al. (2023)][Clarke2023].
 
 ---
 
@@ -380,7 +425,7 @@ result = analyze_timeseries(
 )
 ```
 
-**References**: Blaschke et al. (2024).
+**References**: [Blaschke et al. (2024)][Blaschke2024].
 
 ---
 
@@ -499,6 +544,8 @@ highly non-stationary data).
 | `'ac1'` | Lag-1 autocorrelation | 1D | Quick first look; widely cited |
 | `'variance'` | Window variance | 1D | Complementary to AC1 |
 | `'skewness'` | Third standardised moment | 1D | Cross-check for distributional asymmetry |
+| `'lambda_ac1'` | Restoring rate via Pearson AC1 | 1D | Fast; same information as AC1 but as λ |
+| `'lambda_var'` | Restoring rate via variance ratio | 1D | Complementary to AC1-based estimators |
 | `'lambda_glsar'` | Restoring rate via GLS | 1D | **Recommended default** |
 | `'lambda_ols'` | Restoring rate via Yule-Walker | 1D | Faster alternative to GLSAR |
 | `'lambda_acs'` | Restoring rate via ACF fit | 1D | Robust with multiple lags; ≥ 300 pts/window |
@@ -897,7 +944,7 @@ The surrogate p-value is the **fraction of surrogates** whose Kendall τ is
 - `p < 0.05`: the CSD trend is statistically significant at the 5% level.
 - `p ≥ 0.05`: the trend could plausibly arise from a stationary process.
 
-**Caveats (from Ben-Yami et al. 2023)**:
+**Caveats (from [Ben-Yami et al. 2023][BenYami2023])**:
 - The test assumes the null hypothesis is a stationary process with the
   same power spectrum as the original.  If the observed series has
   pre-existing trends for other reasons (e.g., forced warming), the test
@@ -1025,6 +1072,8 @@ Each method has a consistent default colour across all plot types:
 | `ac1` | Blue |
 | `variance` | Green |
 | `skewness` | Olive |
+| `lambda_ac1` | Coral |
+| `lambda_var` | Gold |
 | `lambda_glsar` | Red |
 | `lambda_ols` | Orange |
 | `lambda_acs` | Purple |
@@ -1057,7 +1106,7 @@ python -m csdtools.examples.significance_testing
 
 ### All-methods comparison
 
-The multi-method plot shows the original time series (top) alongside all 9
+The multi-method plot shows the original time series (top) alongside all 11
 CSD indicators in stacked panels, each with a Theil-Sen trend line and
 annotated Kendall τ / p-value.
 
@@ -1091,50 +1140,93 @@ annotated Kendall τ / p-value.
 
 ## 12. References
 
-Clarke, J., Huntingford, C., Ritchie, P., & Cox, P. (2023).
-Seeking more robust early warning signals for climate tipping points:
-the ratio of spectra method.
-*Earth System Dynamics*.
+Theiler, J., Eubank, S., Longtin, A., Galdrikian, B., & Farmer, J. D. (1992).
+Testing for nonlinearity in time series: the method of surrogate data.
+*Physica D*, 58, 77–94.
+<https://doi.org/10.1016/0167-2789(92)90102-S>
+
+Held, H., & Kleinen, T. (2004).
+Detection of climate system bifurcations by degenerate fingerprinting.
+*Geophysical Research Letters*, 31(23), L23207.
+<https://doi.org/10.1029/2004GL020972>
 
 Dakos, V., Scheffer, M., van Nes, E. H., Brovkin, V., Petoukhov, V., &
 Held, H. (2008).
 Slowing down as an early warning signal for abrupt climate change.
 *PNAS*, 105(38), 14308–14312.
+<https://doi.org/10.1073/pnas.0802430105>
 
-Held, H., & Kleinen, T. (2004).
-Detection of climate system bifurcations by degenerate fingerprinting.
-*Geophysical Research Letters*, 31(23).
+Rietkerk, M., Bastiaansen, R., Banerjee, S., van de Koppel, J., Baudena, M.,
+& Doelman, A. (2021).
+Evasion of tipping in complex systems through spatial pattern formation.
+*Science*, 374(6564), eabj0359.
+<https://doi.org/10.1126/science.abj0359>
 
 Boers, N. (2021).
 Observation-based early-warning signals for a collapse of the Atlantic
 Meridional Overturning Circulation.
 *Nature Climate Change*, 11, 680–688.
+<https://doi.org/10.1038/s41558-021-01097-4>
+
+Smith, T., Traxl, D., & Boers, N. (2022).
+Empirical evidence for recent global shifts in vegetation resilience.
+*Nature Climate Change*, 12, 477–484.
+<https://doi.org/10.1038/s41558-022-01352-2>
 
 Ben-Yami, M., Skiba, V., Bathiany, S., & Boers, N. (2023).
-Uncertainties in AMOC early warning signals.
-*Geophysical Research Letters*.
+Uncertainties in critical slowing down indicators of observation-based
+fingerprints of the Atlantic Overturning Circulation.
+*Nature Communications*, 14, 8344.
+<https://doi.org/10.1038/s41467-023-44046-9>
+
+Clarke, J., Huntingford, C., Ritchie, P. D. L., & Cox, P. M. (2023).
+Seeking more robust early warning signals for climate tipping points:
+the ratio of spectra method (ROSA).
+*Environmental Research Letters*, 18(3), 035006.
+<https://doi.org/10.1088/1748-9326/acbc8d>
 
 Morr, A., & Boers, N. (2024).
-Detection of Approaching Critical Transitions in Multidimensional Systems.
-*Physical Review Letters*.
+Detection of Approaching Critical Transitions in Natural Systems Driven by
+Red Noise.
+*Physical Review X*, 14, 021037.
+<https://doi.org/10.1103/PhysRevX.14.021037>
 
-Morr, A., Bathiany, S., & Boers, N. (2024).
-Anticipating critical transitions in multidimensional systems.
-*Nature Communications* (preprint).
+Morr, A., Riechers, K., Gorjão, L. R., & Boers, N. (2024).
+Anticipating critical transitions in multidimensional systems driven by
+time- and state-dependent noise.
+*Physical Review Research*, 6, 033251.
+<https://doi.org/10.1103/PhysRevResearch.6.033251>
 
-Blaschke, L., Morr, A., & Boers, N. (2024).
+Blaschke, L. L., Nian, D., Bathiany, S., Ben-Yami, M., Smith, T.,
+Boulton, C. A., & Boers, N. (2024).
 Spatial Correlation Increase in Single-Sensor Satellite Data Reveals Loss
 of Amazon Rainforest Resilience.
-*Nature* (preprint).
+*Earth's Future*, 12.
+<https://doi.org/10.1029/2023EF004040>
 
-Smith, M. J., et al. (2024).
-Dynamic Mode Decomposition as an early warning signal for tipping points.
-*preprint*.
+Smith, T., Morr, A., Bookhagen, B., & Boers, N. (2026).
+Predicting instabilities in transient landforms and interconnected ecosystems.
+*Nature Communications*, 17(1), 1316.
+<https://doi.org/10.1038/s41467-026-68944-w>
 
-Rietkerk, M., et al. (2025).
-Ambiguity of early warning signals.
-*Nature Reviews Earth & Environment*.
+Rietkerk, M., Skiba, V., Weinans, E., Hébert, R., & Laepple, T. (2025).
+Ambiguity of early warning signals for climate tipping points.
+*Nature Climate Change*, 15, 479–488.
+<https://doi.org/10.1038/s41558-025-02328-8>
 
-Zhang, R., et al. (2024).
-Warming and disturbances affect Arctic-boreal vegetation resilience.
-*Nature Climate Change*.
+---
+
+<!-- Markdown link definitions — used for [text][key] references above -->
+[Theiler1992]: https://doi.org/10.1016/0167-2789(92)90102-S
+[Held2004]: https://doi.org/10.1029/2004GL020972
+[Dakos2008]: https://doi.org/10.1073/pnas.0802430105
+[Rietkerk2021]: https://doi.org/10.1126/science.abj0359
+[Boers2021]: https://doi.org/10.1038/s41558-021-01097-4
+[Smith2022]: https://doi.org/10.1038/s41558-022-01352-2
+[BenYami2023]: https://doi.org/10.1038/s41467-023-44046-9
+[Clarke2023]: https://doi.org/10.1088/1748-9326/acbc8d
+[Morr2024a]: https://doi.org/10.1103/PhysRevX.14.021037
+[Morr2024b]: https://doi.org/10.1103/PhysRevResearch.6.033251
+[Blaschke2024]: https://doi.org/10.1029/2023EF004040
+[Smith2026]: https://doi.org/10.1038/s41467-026-68944-w
+[Rietkerk2025]: https://doi.org/10.1038/s41558-025-02328-8

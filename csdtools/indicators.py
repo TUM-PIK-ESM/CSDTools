@@ -19,8 +19,8 @@ is the noise amplitude.  In discrete time with step Δt:
 Critical Slowing Down (CSD) predicts λ → 0 (φ → 1) as the system approaches
 the bifurcation.  This manifests as:
 
-    - Increasing lag-1 autocorrelation (AC1 → 1)
-    - Increasing variance (Var = σ²/(1 − φ²) → ∞)
+    - Increasing lag-1 autocorrelation (AC1 = φ → 1)
+    - Increasing variance (Var = σ²/2|λ| → ∞)
     - Decreasing |λ| estimated by any of the methods below
 
 Sign convention
@@ -49,6 +49,8 @@ RECOMMENDED_MIN_WINDOW: dict = {
     "ac1":          30,   # need ~30 lag-1 pairs for a stable correlation
     "variance":     20,   # variance estimate needs a few dozen samples
     "skewness":     30,   # third moment needs enough samples to be reliable
+    "lambda_ac1":   30,   # needs ~30 lag-1 pairs for a stable Pearson correlation
+    "lambda_var":   30,   # OLS residual noise estimate needs ~30 samples
     "lambda_glsar": 50,   # GLS iteration needs enough data to converge
     "lambda_ols":   30,   # Yule-Walker estimator stabilises around 30
     "lambda_acs":   100,   # ACF must be estimated reliably at multiple lags
@@ -69,6 +71,12 @@ _MIN_WINDOW_REASON: dict = {
     "skewness":
         "The third standardised moment has high relative uncertainty below "
         "~30 samples.",
+    "lambda_ac1":
+        "AC1-based λ uses a single Pearson correlation; fewer than ~30 lag-1 "
+        "pairs yields an unreliable estimate.",
+    "lambda_var":
+        "Variance-based λ requires an OLS residual noise estimate; fewer than "
+        "~30 samples makes both the noise and variance estimates unstable.",
     "lambda_glsar":
         "GLSAR iterative fitting may not converge reliably below ~50 samples.",
     "lambda_ols":
@@ -166,7 +174,7 @@ def estimate_variance(
     """
     Sample variance after linear detrending.
 
-    For a stable OU process: Var = σ²/(1 − φ²) → ∞ as φ → 1.
+    For a stable OU process: Var = σ²/2|λ| → ∞ as λ → 0.
 
     **CSD signature**: variance increases.
 
@@ -259,7 +267,7 @@ def estimate_a_glsar(
     x : array-like
         Pre-processed window (≥ 30 samples recommended).
     dt : float
-        Physical time step (determines the units of the returned λ).
+        Time step (unused).
     detrend : bool
         Remove linear trend within window.
 
@@ -280,7 +288,7 @@ def estimate_a_glsar(
     if len(x) < 6 or np.var(x) == 0:
         return np.nan
     try:
-        model = sm.GLSAR(endog=dx, exog=x[:-1]*dt, rho=1)
+        model = sm.GLSAR(endog=dx, exog=x[:-1], rho=1)
         result = model.iterative_fit(maxiter=10, rtol=1e-4)
         phi = float(result.params[1])
         return phi
@@ -324,7 +332,7 @@ def estimate_lambda_glsar(
     # Delegate the GLSAR slope estimation to estimate_a_glsar and convert
     # the returned slope (phi) to a continuous-time restoring rate λ.
     try:
-        phi = estimate_a_glsar(x, dt=dt, detrend=detrend)
+        phi = estimate_a_glsar(x, detrend=detrend)
         if phi is None or np.isnan(phi) or phi <= -1 or not np.isfinite(phi):
             return np.nan
         return np.log(phi + 1) / dt
@@ -364,6 +372,7 @@ def estimate_lambda_ols(
     
     -------
     @Maya, @Andreas, I did have some OLS code (which I never really used though) but its not that, so I thought I best do not change anything here
+    (Andreas): This is exactly the same as lambda computed from the ac1 right?
     """
     x = _prep(x, detrend)
     if len(x) < 4 or np.var(x) == 0:
@@ -378,22 +387,127 @@ def estimate_lambda_ols(
         return np.nan
 
 
+def estimate_lambda_ac1(
+    x: np.ndarray,
+    dt: float = 1.0,
+    detrend: bool = True,
+) -> float:
+    """
+    Restoring rate via lag-1 autocorrelation (AC1).
+
+    Estimates the AR(1) coefficient φ as the Pearson correlation between
+    successive pairs x[t] and x[t+1], then converts to a continuous-time
+    restoring rate:
+
+        λ = log(φ) / Δt
+
+    As CSD develops, φ → 1 and λ → 0 from below.
+
+    **CSD signature**: λ increases toward 0.
+
+    Parameters
+    ----------
+    x : array-like
+        Pre-processed window.
+    dt : float
+        Physical time step.
+    detrend : bool
+        Remove linear trend within window.
+
+    Returns
+    -------
+    float
+        Continuous-time restoring rate λ (negative for stable systems).
+    """
+    x = _prep(x, detrend)
+    if len(x) < 4:
+        return np.nan
+    try:
+        a, b = x[:-1], x[1:]
+        valid = np.isfinite(a) & np.isfinite(b)
+        if valid.sum() < 3:
+            return np.nan
+        phi = float(np.corrcoef(a[valid], b[valid])[0, 1])
+        if not np.isfinite(phi) or phi <= 0.0:
+            return np.nan
+        return float(np.log(phi) / dt)
+    except Exception:
+        return np.nan
+
+
+def estimate_lambda_var(
+    x: np.ndarray,
+    dt: float = 1.0,
+    detrend: bool = True,
+) -> float:
+    """
+    Restoring rate via the variance-to-noise ratio.
+
+    For a stable OU process with restoring rate λ, noise amplitude σ, and
+    stationary variance V = σ²/(2|λ|), the relationship between the
+    per-step noise variance σ²_noise and V gives:
+
+        λ = (1/2) · log(1 − σ²_noise / V) / Δt
+
+    σ²_noise is estimated from OLS residuals of the regression
+    dx = λ_step · x[t] + ε, where dx = x[t+1] − x[t].
+
+    **CSD signature**: λ increases toward 0.
+
+    Parameters
+    ----------
+    x : array-like
+        Pre-processed window.
+    dt : float
+        Physical time step.
+    detrend : bool
+        Remove linear trend within window.
+
+    Returns
+    -------
+    float
+        Continuous-time restoring rate λ (negative for stable systems).
+    """
+    from scipy.stats import linregress as _linregress
+
+    x = _prep(x, detrend)
+    if len(x) < 4:
+        return np.nan
+    try:
+        dx = x[1:] - x[:-1]
+        lam_step = _linregress(x[:-1], dx)[0]
+        diff = dx - lam_step * x[:-1]
+        sigma_noise = float(np.std(diff))
+        var = float(np.var(x))
+        if var == 0.0 or sigma_noise ** 2 >= var:
+            return np.nan
+        return float(0.5 * np.log(1.0 - sigma_noise ** 2 / var) / dt)
+    except Exception:
+        return np.nan
+
+
 def estimate_lambda_acs(
     x: np.ndarray,
     dt: float = 1.0,
-    max_lag: int = 20,
+    max_lag: int = 3,
     detrend: bool = True,
 ) -> float:
     """
     Restoring rate by fitting the theoretical autocorrelation structure (ACS).
 
-    For an OU process the autocorrelation at lag τ is:
+    Fits a two-mode theoretical ACS to the empirical ACF over lags 1…max_lag.
+    The two-mode ACS is the autocorrelation of a scalar observable from a 2D
+    OU process with two decay rates λ and θ (both positive):
 
-        C(τ) = exp(λ τ)
+        General case (|λ − θ| ≥ 0.01):
+            C(τ) = (θ·exp(−λτ) − λ·exp(−θτ)) / (θ − λ)
 
-    Minimises the squared difference between the empirical ACF and this
-    theoretical form over lags 1 … max_lag.  Using multiple lags makes
-    the estimate more robust than a single-lag estimator.
+        Degenerate case (λ ≈ θ):
+            C(τ) = exp(−λτ) · (1 + λτ)
+
+    The dominant (slowest-decaying) mode min(λ, θ) is returned as a negative
+    restoring rate, consistent with the sign convention of all other estimators.
+    As CSD develops, this value increases toward 0.
 
     **CSD signature**: λ increases toward 0.
 
@@ -411,11 +525,12 @@ def estimate_lambda_acs(
     Returns
     -------
     float
-        Continuous-time restoring rate λ.
+        Continuous-time restoring rate λ (negative for stable systems).
 
     References
     ----------
-    Morr & Boers (2024).
+    Morr, A. & Boers, N. (2024). Physical Review X, 14, 021037.
+    https://doi.org/10.1103/PhysRevX.14.021037
     """
     from scipy import optimize
     from statsmodels.tsa.stattools import acf as _acf
@@ -427,12 +542,22 @@ def estimate_lambda_acs(
         lags = np.arange(1, nlags + 1, dtype=float) * dt
 
         def cost(p):
-            return np.sum((obs - np.exp(p[0] * lags)) ** 2)
+            lam   = min(abs(p[0]), 5.0)
+            theta = min(abs(p[1]), 5.0)
+            if abs(lam - theta) < 0.01:
+                theo = np.exp(-lam * lags) * (1.0 + lam * lags)
+            else:
+                theo = (theta * np.exp(-lam * lags) - lam * np.exp(-theta * lags)) / (theta - lam)
+            return float(np.sum((obs - theo) ** 2))
 
         res = optimize.minimize(
-            cost, x0=[-0.1], bounds=[(-50.0, -1e-8)], method="L-BFGS-B"
+            cost, x0=[0.1, 0.5], method="Nelder-Mead",
+            options={"maxiter": 100000},
         )
-        return float(res.x[0]) if res.success else np.nan
+        lam   = min(abs(res.x[0]), 5.0)
+        theta = min(abs(res.x[1]), 5.0)
+        # Return the dominant eigenvalue as a negative restoring rate
+        return -float(min(lam, theta))
     except Exception:
         return np.nan
 
@@ -440,19 +565,31 @@ def estimate_lambda_acs(
 def estimate_lambda_psd(
     x: np.ndarray,
     dt: float = 1.0,
+    band_size: int = 10,
     detrend: bool = True,
 ) -> float:
     """
     Restoring rate by fitting the theoretical power spectral density (PSD).
 
-    For a continuous-time OU process with restoring rate λ and noise σ, the
-    one-sided power spectral density is:
+    Fits a two-mode discrete-time PSD model to the band-averaged log-periodogram.
+    The theoretical PSD is the exact one-sided spectrum of a scalar observable
+    from a discrete-time AR(2) process with poles at exp(−λ) and exp(−θ)
+    (λ, θ > 0) driven by white noise of amplitude κ:
 
-        S(f) = 2σ² / (λ² + (2πf)²)
+        General case (|λ − θ| ≥ 0.01):
+            S(f) = κ²/[2λθ(λ²−θ²)] · [λ(1−e^{−2θ})/(1+e^{−2θ}−2e^{−θ}cos(2πf))
+                                       − θ(1−e^{−2λ})/(1+e^{−2λ}−2e^{−λ}cos(2πf))]
 
-    Fits this to the periodogram of the window in log-space (which is
-    equivalent to minimising the mean-square error of the log-spectrum, and
-    is more robust to the wide dynamic range typical of spectral estimates).
+        Degenerate case (λ ≈ θ):
+            S(f) = κ²/(4λ³) · [−λ − cos(2πf)sinh(λ) + cosh(λ)(λcos(2πf)+sinh(λ))]
+                              / (cos(2πf) − cosh(λ))²
+
+    Observed and theoretical spectra are band-averaged (``band_size`` bins per
+    band) before log-transformation and comparison, which reduces the noise of
+    individual periodogram ordinates.
+
+    The dominant (slowest-decaying) mode min(λ, θ) is returned as a negative
+    restoring rate in per-unit-time units.
 
     **CSD signature**: λ increases toward 0.
 
@@ -461,40 +598,84 @@ def estimate_lambda_psd(
     x : array-like
         Pre-processed window (≥ 16 samples recommended).
     dt : float
-        Physical time step.
+        Physical time step.  λ and θ are fitted in per-sample units and
+        divided by dt to convert to per-unit-time.
+    band_size : int
+        Number of frequency bins averaged together before fitting.
+        Default 10 matches the reference implementation.
     detrend : bool
         Remove linear trend within window.
 
     Returns
     -------
     float
-        Continuous-time restoring rate λ (negative).
+        Continuous-time restoring rate λ (negative for stable systems).
 
     References
     ----------
-    Morr & Boers (2024).
+    Morr, A. & Boers, N. (2024). Physical Review X, 14, 021037.
+    https://doi.org/10.1103/PhysRevX.14.021037
+
+    Morr, A., Riechers, K., Gorjão, L. R., & Boers, N. (2024).
+    Physical Review Research, 6, 033251.
+    https://doi.org/10.1103/PhysRevResearch.6.033251
     """
-    from scipy import optimize, signal
+    from scipy import optimize
 
     x = _prep(x, detrend)
-    if len(x) < 8:
+    n = len(x)
+    if n < 8:
         return np.nan
     try:
-        freqs, psd = signal.periodogram(x, fs=1.0 / dt)
-        freqs, psd = freqs[1:], psd[1:]   # exclude DC
-        if not np.any(psd > 0):
+        # One-sided periodogram: rfft, exclude DC, take positive half
+        psd = (np.abs(np.fft.rfft(x)[1:round(n / 2)]) ** 2) / n
+
+        # Band-average: groups of band_size consecutive bins
+        def _band_avg(arr):
+            n_bands = round(len(arr) / band_size - 1)
+            return np.array([np.mean(arr[i * band_size:(i + 1) * band_size])
+                             for i in range(n_bands)])
+
+        obs = np.log(_band_avg(psd))
+        if len(obs) == 0 or not np.all(np.isfinite(obs)):
             return np.nan
 
+        # cos(2πf) for each periodogram frequency (cycles per sample)
+        cos_arr = np.cos(2.0 * np.pi * np.fft.fftfreq(n)[1:round(n / 2)])
+
+        def _theo_psd(lam, theta, kappa):
+            el = np.exp(lam)
+            et = np.exp(theta)
+            c  = cos_arr
+            if abs(lam - theta) < 0.01:
+                theo = (kappa ** 2 / (4.0 * lam ** 3) *
+                        (-lam - c * np.sinh(lam) +
+                         np.cosh(lam) * (lam * c + np.sinh(lam))) /
+                        (c - np.cosh(lam)) ** 2)
+            else:
+                theo = (kappa ** 2 / (2.0 * lam * theta * (lam ** 2 - theta ** 2)) *
+                        (lam * (1.0 - et ** -2) / (1.0 + et ** -2 - 2.0 * et ** -1 * c) -
+                         theta * (1.0 - el ** -2) / (1.0 + el ** -2 - 2.0 * el ** -1 * c)))
+            return np.log(_band_avg(theo))
+
         def cost(p):
-            lam_abs = np.abs(p[0]) + 1e-10
-            sig2 = np.abs(p[1]) + 1e-20
-            theo = 2.0 * sig2 / (lam_abs**2 + (2.0 * np.pi * freqs) ** 2)
-            return np.sum((np.log(psd + 1e-20) - np.log(theo)) ** 2)
+            lam   = min(abs(p[0]), 5.0)
+            theta = min(abs(p[1]), 5.0)
+            kappa = abs(p[2])
+            theo  = _theo_psd(lam, theta, kappa)
+            if len(theo) != len(obs) or not np.all(np.isfinite(theo)):
+                return 1e20
+            return float(np.sum(np.abs(obs - theo) ** 2))
 
         res = optimize.minimize(
-            cost, x0=[0.1, float(np.var(x))], method="Nelder-Mead"
+            cost, x0=[0.1, 0.5, float(np.std(x))],
+            method="Nelder-Mead",
+            options={"maxiter": 100000, "disp": False},
         )
-        return -float(np.abs(res.x[0]))
+        lam   = min(abs(res.x[0]), 5.0)
+        theta = min(abs(res.x[1]), 5.0)
+        # λ and θ are per-sample rates; divide by dt to give per-unit-time
+        return -float(min(lam, theta)) / dt
     except Exception:
         return np.nan
 
@@ -565,7 +746,12 @@ def estimate_lambda_km(
 
     References
     ----------
-    Morr et al. (2024).
+    Morr, A. & Boers, N. (2024). Physical Review X, 14, 021037.
+    https://doi.org/10.1103/PhysRevX.14.021037
+
+    Morr, A., Riechers, K., Gorjão, L. R., & Boers, N. (2024).
+    Physical Review Research, 6, 033251.
+    https://doi.org/10.1103/PhysRevResearch.6.033251
 
     ----------
     @Andreas, I have not fully checked it but 1d version seems to be the same as what my code does.
@@ -747,8 +933,9 @@ def estimate_rosa(
 
     References
     ----------
-    Clarke et al. (2023). Seeking more robust early warning signals for
-    climate tipping points: the ratio of spectra method.
+    Clarke, J., Huntingford, C., Ritchie, P. D. L., & Cox, P. M. (2023).
+    Environmental Research Letters, 18(3), 035006.
+    https://doi.org/10.1088/1748-9326/acbc8d
     """
     from scipy import optimize, signal
 
@@ -852,7 +1039,10 @@ def estimate_lambda_dmd(
 
     References
     ----------
-    Smith et al. (2024).
+    Smith, T., Morr, A., Bookhagen, B., & Boers, N. (2026).
+    Predicting instabilities in transient landforms and interconnected ecosystems.
+    Nature Communications, 17(1), 1316.
+    https://doi.org/10.1038/s41467-026-68944-w
     """
     x = np.asarray(x, dtype=float).copy()
 
@@ -961,7 +1151,11 @@ def estimate_spatial_corr(
 
     References
     ----------
-    Blaschke et al. (2024); Rietkerk et al. (2021).
+    Blaschke, L. L., et al. (2024). Earth's Future, 12.
+    https://doi.org/10.1029/2023EF004040
+
+    Rietkerk, M., et al. (2021). Science, 374(6564), eabj0359.
+    https://doi.org/10.1126/science.abj0359
     """
     if distance_matrix is None:
         warnings.warn(
@@ -992,6 +1186,8 @@ INDICATOR_REGISTRY: dict = {
     "ac1":           (estimate_ac1,           False),
     "variance":      (estimate_variance,      False),
     "skewness":      (estimate_skewness,      False),
+    "lambda_ac1":    (estimate_lambda_ac1,    True),
+    "lambda_var":    (estimate_lambda_var,    True),
     "lambda_glsar":  (estimate_lambda_glsar,  True),
     "lambda_ols":    (estimate_lambda_ols,    True),
     "lambda_acs":    (estimate_lambda_acs,    True),

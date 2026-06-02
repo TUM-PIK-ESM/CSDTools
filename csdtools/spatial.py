@@ -13,11 +13,11 @@ correlation between distant cells, which is expected to grow most during CSD.
 
 References
 ----------
-Blaschke et al. (2024). Spatial Correlation Increase in Single-Sensor
-Satellite Data Reveals Loss of Amazon Rainforest Resilience.
+Blaschke, L. L., et al. (2024). Earth's Future, 12.
+https://doi.org/10.1029/2023EF004040
 
-Rietkerk et al. (2021). Evasion of tipping in complex systems through
-spatial heterogeneity. *Science*.
+Rietkerk, M., et al. (2021). Science, 374(6564), eabj0359.
+https://doi.org/10.1126/science.abj0359
 
 
 -------
@@ -64,11 +64,25 @@ def spatial_correlation(
     (shape: n_cells × window_size) to this function.
     """
     n_cells = data.shape[0]
-    # Pearson correlation matrix across all cells
-    corr = np.corrcoef(data, data, rowvar=False, axis=0)[:n_cells, n_cells:]   # shape (n_cells, n_cells)
-    distance_matrix = distance_matrix.where(distance_matrix>min_dist, np.nan)  # must be exclusively larger to exclude correlation of cell with itself
-    distance_matrix = distance_matrix.where(distance_matrix<=max_dist, np.nan)
-    return np.nanmean(corr, where=distance_matrix, axis=0)
+    # Pearson correlation matrix: shape (n_cells, n_cells)
+    corr = np.corrcoef(data)
+    dist = np.asarray(distance_matrix, dtype=float)
+
+    # Build mask: pairs strictly beyond min_dist, within max_dist, off-diagonal
+    mask = dist > min_dist
+    if max_dist is not None:
+        mask &= dist <= max_dist
+    np.fill_diagonal(mask, False)
+
+    if not mask.any():
+        return np.nan
+
+    # Distance-weighted mean: w_ij = 1/d_ij
+    weights = np.divide(1.0, dist, where=mask, out=np.zeros_like(dist))
+    total_weight = weights.sum()
+    if total_weight == 0.0:
+        return np.nan
+    return float(np.sum(corr * weights) / total_weight)
     
 
 

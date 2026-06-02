@@ -14,11 +14,11 @@ with the same spectral shape could produce by chance.
 
 References
 ----------
-Theiler et al. (1992). Testing for nonlinearity in time series: the method
-of surrogate data. *Physica D*, 58, 77-94.
+Theiler, J., et al. (1992). Physica D, 58, 77–94.
+https://doi.org/10.1016/0167-2789(92)90102-S
 
-Dakos et al. (2008). Slowing down as an early warning signal for abrupt
-climate change. *PNAS*, 105, 14308-14312.
+Dakos, V., et al. (2008). PNAS, 105(38), 14308–14312.
+https://doi.org/10.1073/pnas.0802430105
 """
 
 import numpy as np

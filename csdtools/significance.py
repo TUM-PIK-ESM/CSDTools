@@ -12,10 +12,12 @@ stationary process.  This module provides surrogate-based tests:
 
 References
 ----------
-Dakos et al. (2008). Slowing down as an early warning signal for abrupt
-climate change. *PNAS*.
+Dakos, V., et al. (2008). PNAS, 105(38), 14308–14312.
+https://doi.org/10.1073/pnas.0802430105
 
-Ben-Yami et al. (2023). Uncertainties in AMOC early warning signals.
+Ben-Yami, M., Skiba, V., Bathiany, S., & Boers, N. (2023).
+Nature Communications, 14, 8344.
+https://doi.org/10.1038/s41467-023-44046-9
 """
 
 import numpy as np

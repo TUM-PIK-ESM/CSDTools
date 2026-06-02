@@ -17,16 +17,12 @@ The module provides:
 
 References
 ----------
-Lana Blaschke's empirical detection methods (lana/empirical_detection.py). 
-Only 
-
-Originally from Smith et al. (2022). Empirical evidence for recent global shifts in vegetation resilience. Nature Climate Change.
+Smith, T., Traxl, D., & Boers, N. (2022). Nature Climate Change, 12, 477–484.
+https://doi.org/10.1038/s41558-022-01352-2
 
 -------
 checked by Lana on 2026-05-19
 """
-
-from curses import raw
 
 import numpy as np
 from typing import Optional, List, Dict, Any
@@ -246,14 +242,14 @@ def empirical_recovery_rate(
     transitions = detect_transitions(ddetr, window_size, transition_percentile)
 
     if raw_drop_min is None:
-        raw_drop_min = 0.1 * np.float64(draw.std().values) # 0.1 of ra
+        raw_drop_min = 0.1 * float(draw.std())  # 0.1 of raw std
     results = []
     used = set()
     for idx in transitions:
         # Avoid fitting overlapping recovery windows
         if any(abs(idx - u) < window_size // 2 for u in used):
             continue
-        fit = fit_exponential_recovery(ddetr, draw, idx, n_local_min)
+        fit = fit_exponential_recovery(draw, ddetr, idx, n_local_min)
         if fit is not None: 
             if fit["raw_drop"] >= raw_drop_min and fit["KS_pval"] > 0.05 and fit["lambda_empirical"] > -3: # additional criteria to filter out spurious transitions 
                 results.append(fit)
