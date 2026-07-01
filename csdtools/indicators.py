@@ -766,10 +766,17 @@ def estimate_lambda_km(
         try:
             from kramersmoyal import km  # type: ignore
 
-            powers = np.array([[1], [2]])
+            # Request the 0th power (density) explicitly and read the drift from
+            # kmc[1]. This is robust across kramersmoyal versions: 0.4 auto-
+            # prepends power 0 and trims it back off (so drift lands at kmc[0]),
+            # whereas >=0.4.1 always keeps the density row at index 0 (drift at
+            # kmc[1]). Passing 0 explicitly makes both return [density, drift,
+            # diffusion] in the same order, so the indexing no longer depends on
+            # the installed version.
+            powers = np.array([[0], [1], [2]])
             kmc, edges = km(x.reshape(-1, 1), bins=np.array([bin_number]),
                             powers=powers, bw=bw)
-            km1 = kmc[0].flatten() / dt   # drift normalised by time step
+            km1 = kmc[1].flatten() / dt   # drift normalised by time step
             centres = (edges[0][:-1] + edges[0][1:]) / 2.0
 
             n_bins = len(centres)
