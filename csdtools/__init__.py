@@ -76,7 +76,7 @@ from .significance import significance_test
 from ._utils import kendall_tau, strip_nans
 from .plotting import plot_analysis, plot_multi_analysis, plot_significance
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 __author__ = "CSDTools contributors"
 
 __all__ = [
