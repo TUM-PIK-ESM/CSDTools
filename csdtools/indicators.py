@@ -97,7 +97,7 @@ _MIN_WINDOW_REASON: dict = {
         "DMD requires more snapshots than state dimensions to solve the "
         "linear operator; ~50 samples is the practical minimum.",
     "spatial_corr":
-        "Pearson correlation between cell pairs requires sufficient samples "
+        "Pearson correlation between center cell and neighbors requires sufficient samples "
         "for a stable estimate; ~30 samples per window is the practical minimum.",
 }
 
@@ -1117,15 +1117,17 @@ def estimate_spatial_corr(
     distance_matrix: Optional[np.ndarray] = None,
     min_dist: float = 0.0,
     max_dist: Optional[float] = None,
+    center_idx: Optional[int] = None,
 ) -> float:
     """
-    Distance-weighted mean spatial correlation (CSD indicator).
+    Mean spatial correlation (CSD indicator).
 
     For a spatially extended system approaching a critical transition the
-    correlation length diverges: distant locations become increasingly
-    correlated.  For each pair of cells (i, j) at distance d_{ij}, the
-    Pearson correlation of their time series is computed and averaged with
-    weight 1/d_{ij}.
+    correlation length diverges: neighboring locations become increasingly
+    correlated. The *mean spatial correlation* is defined as the average 
+    Pearson correlation between the center grid cell (center_idx) and
+    all other cells within a user-defined "neighborhood" 
+    (min_dist < d_j <= max_dist).
 
     **CSD signature**: spatial correlation increases.
 
@@ -1138,17 +1140,21 @@ def estimate_spatial_corr(
     detrend : bool
         Remove a linear trend within each cell's window before computing
         correlations.
-    distance_matrix : np.ndarray, shape (n_cells, n_cells)
-        Symmetric pairwise distance matrix (e.g. in km).  Required.
+    distance_matrix : np.ndarray, shape (n_cells,)
+        Symmetric pairwise distance matrix (e.g. in km).
+        If None, all grid cells are considered neighbors of the center cell.
     min_dist : float
-        Exclude cell pairs closer than this distance.
+        Exclude cell from neighbors if closer than this distance.
     max_dist : float or None
-        Exclude cell pairs farther than this distance.
+        Exclude cell from neighbors farther than this distance.
+    center_idx : int or None
+        Index of the central grid cell.  Defaults to ``n_cells // 2`` if
+        not given.
 
     Returns
     -------
     float
-        Distance-weighted mean spatial Pearson correlation.
+        Mean spatial Pearson correlation.
 
     Notes
     -----
@@ -1160,17 +1166,7 @@ def estimate_spatial_corr(
     ----------
     Blaschke, L. L., et al. (2024). Earth's Future, 12.
     https://doi.org/10.1029/2023EF004040
-
-    Rietkerk, M., et al. (2021). Science, 374(6564), eabj0359.
-    https://doi.org/10.1126/science.abj0359
     """
-    if distance_matrix is None:
-        warnings.warn(
-            "'spatial_corr' requires a distance_matrix parameter; returning NaN.",
-            UserWarning,
-            stacklevel=3,
-        )
-        return np.nan
 
     x = np.asarray(x, dtype=float).copy()
     if detrend:
@@ -1179,7 +1175,7 @@ def estimate_spatial_corr(
 
     from .spatial import spatial_correlation
     return spatial_correlation(
-        x, distance_matrix, min_dist=min_dist, max_dist=max_dist
+        x, distance_matrix, min_dist=min_dist, max_dist=max_dist, center_idx=center_idx
     )
 
 

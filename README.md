@@ -407,10 +407,14 @@ result = analyze_timeseries(x, method='rosa', window_size=100, eta=0.5)
 
 **Method name**: `'spatial_corr'`
 
-Quantifies the **spatial correlation length** increase predicted by CSD in
-spatially extended systems.  For each pair of cells (i, j) at distance
-d_{ij}, the Pearson correlation between their time series is computed and
-averaged with weight 1/d_{ij}.
+Quantifies the **spatial correlation** which increase predicted by CSD in
+spatially extended systems. 
+The *mean spatial correlation* is defined as the average 
+Pearson correlation between a center grid cell (center_idx) time series and
+all other cells within a user-defined "neighborhood"
+(min_dist < d_j <= max_dist).
+Note that it reflects the average temporal correlation between neighboring cells.
+
 
 ```python
 from csdtools import analyze_timeseries
@@ -553,7 +557,7 @@ highly non-stationary data).
 | `'lambda_km'` | Restoring rate via Kramers-Moyal | **1D or nD** | Non-parametric; ≥ 300 pts/window |
 | `'lambda_dmd'` | Dominant DMD eigenvalue magnitude | **1D or nD** | Operator-based; time-delay embedding for 1D |
 | `'rosa'` | Ratio of spectral bands | 1D | Robust to some non-stationarities |
-| `'spatial_corr'` | Distance-weighted spatial correlation | **nD** | Spatially extended systems |
+| `'spatial_corr'` | Mean spatial correlation | **nD** | Spatially extended systems |
 
 Methods marked **nD** accept a `(n_dims, n_samples)` array as input and are
 suitable for multivariate systems.  See [Multivariate Analysis](#6-multivariate-analysis).
@@ -747,7 +751,7 @@ where each row is one variable and each column is one time step:
 |--------|-------------|
 | `'lambda_km'` | Estimates full drift Jacobian B; returns dominant real eigenvalue |
 | `'lambda_dmd'` | Fits linear operator via DMD; returns dominant eigenvalue magnitude |
-| `'spatial_corr'` | Distance-weighted mean Pearson correlation across cell pairs |
+| `'spatial_corr'` | Mean Pearson correlation between center cell and neighbors |
 
 Pass the multivariate array directly to `analyze_timeseries`.  The pipeline
 handles preprocessing per row, windowing along the time axis, and Kendall τ

@@ -6,7 +6,7 @@ time series with Critical Slowing Down:
 
     lambda_km    — non-parametric Kramers-Moyal drift Jacobian
     lambda_dmd   — Dynamic Mode Decomposition dominant eigenvalue magnitude
-    spatial_corr — distance-weighted mean spatial correlation
+    spatial_corr — Mean spatial correlation
 
 The synthetic data is a 2D coupled AR(1) process whose dominant eigenvalue
 increases linearly from 0.3 to 0.95, mimicking CSD as a 2D system approaches
@@ -57,10 +57,11 @@ for t in range(1, T):
 WINDOW    = 300
 DETREND_W = 600   # running-mean bandwidth; rule of thumb: ≥ 2 × window_size
 
-# For spatial_corr: 2-cell distance matrix.
+# For spatial_corr: distances from the center cell (CENTER, defaulting to
+# n_cells // 2 = 1) to every cell, with 0 at the center's own index.
 # Both variables are treated as spatial locations 1 km apart.
-D = np.array([[0.0, 1.0],
-              [1.0, 0.0]])
+CENTER = 1
+D = np.array([1.0, 0.0])
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 3. Run all three nD indicators
@@ -78,7 +79,9 @@ print("-" * 40)
 
 r_km = analyze_timeseries(x, method="lambda_km",  **common)
 r_dmd = analyze_timeseries(x, method="lambda_dmd", embedding_dim=3, **common)
-r_sc  = analyze_timeseries(x, method="spatial_corr", distance_matrix=D, **common)
+r_sc  = analyze_timeseries(
+    x, method="spatial_corr", distance_matrix=D, center_idx=CENTER, **common
+)
 
 results = {"lambda_km": r_km, "lambda_dmd": r_dmd, "spatial_corr": r_sc}
 
@@ -100,9 +103,14 @@ fig.suptitle(
 )
 
 # --- Time series panel ---
+# Center cell (CENTER) highlighted; its neighbor plotted in grey.
 t_idx = np.arange(T)
-axes[0].plot(t_idx, x[0], color="#1565C0", lw=0.7, label="$x_1(t)$")
-axes[0].plot(t_idx, x[1], color="#2E7D32", lw=0.7, label="$x_2(t)$", alpha=0.85)
+for i, d in enumerate(D):
+    if i != CENTER:
+        axes[0].plot(t_idx, x[i], color="grey", lw=0.7,
+                 label=f"$x_{i}(t)$ (neighbor)", alpha=0.7)
+axes[0].plot(t_idx, x[CENTER], color="#1565C0", lw=0.9,
+             label=f"$x_{CENTER}(t)$ (center)")
 axes[0].set_ylabel("State", fontsize=9)
 axes[0].legend(fontsize=8, loc="upper left")
 axes[0].tick_params(labelbottom=False)
