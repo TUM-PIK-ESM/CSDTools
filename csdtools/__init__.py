@@ -169,8 +169,10 @@ def analyze_timeseries(
     x : array-like, shape (n,) or (n_dims, n_samples)
         Input time series.  Pass a 1D array for univariate analysis or a 2D
         array of shape ``(n_dims, n_samples)`` for multivariate analysis.
-        Multivariate input is only supported by ``method='lambda_km'``; global
-        preprocessing and significance testing are applied per dimension.
+        Multivariate input is only supported by the multivariate methods
+        (``'lambda_km'``, ``'lambda_dmd'``, ``'lambda_dmd_floquet'``,
+        ``'spatial_corr'``); global preprocessing and significance testing are
+        applied per dimension.
     method : str
         CSD indicator to use.  Choose from :data:`AVAILABLE_METHODS`:
 
@@ -250,7 +252,12 @@ def analyze_timeseries(
 
         - ``max_lag=25``  for ``'lambda_acs'``
         - ``bin_number=80``  for ``'lambda_km'``
-        - ``eta=0.4``  for ``'rosa'``
+        - ``period=12``  for ``'lambda_dmd_floquet'``
+        - ``noise=<series>`` or ``noise_psd=<callable/(ω, values)>``  for ``'rosa'``
+
+        A ``noise`` series passed for ``'rosa'`` must be aligned with (and the
+        same length as) ``x`` after NaN handling; it is windowed in sync with
+        each analysis window, allowing a time-varying forcing spectrum.
 
         To pass kwargs to the STL/harmonic preprocessor, use the key
         ``preprocess_kwargs={'period': 12}``.

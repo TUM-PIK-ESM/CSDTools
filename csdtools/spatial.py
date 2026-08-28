@@ -86,8 +86,8 @@ def spatial_correlation(
         if max_dist is not None:
             mask &= (dist <= max_dist)
 
-    # Pearson correlation matrix across all cells
-    corr = np.corrcoef(data)[i, :]   # shape (1, n_cells)
+    # Pearson correlation of the center cell with every cell
+    corr = np.corrcoef(data)[i, :]   # shape (n_cells,)
     return np.nanmean(corr, where=mask, axis=0)
 
 
@@ -96,7 +96,7 @@ def spatial_correlation_2d(
     distance_matrix: np.ndarray,
     min_dist: float = 0.0,
     max_dist: Optional[float] = None,
-) -> float:
+) -> np.ndarray:
     """
     Mean spatial correlation between cells.
 

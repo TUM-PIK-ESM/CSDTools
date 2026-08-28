@@ -37,12 +37,18 @@ from typing import Optional, Dict, List, Sequence, Tuple, Union
 METHOD_COLORS: Dict[str, str] = {
     "ac1":          "#1976D2",   # blue
     "variance":     "#388E3C",   # green
+    "skewness":     "#00796B",   # dark teal
+    "lambda_ac1":   "#42A5F5",   # light blue
+    "lambda_var":   "#66BB6A",   # light green
     "lambda_glsar": "#D32F2F",   # red
     "lambda_ols":   "#F57C00",   # orange
     "lambda_acs":   "#7B1FA2",   # purple
     "lambda_psd":   "#0097A7",   # teal
     "lambda_km":    "#5D4037",   # brown
+    "lambda_dmd":   "#455A64",   # blue-grey
+    "lambda_dmd_floquet": "#263238",  # dark blue-grey
     "rosa":         "#C2185B",   # pink
+    "spatial_corr": "#8D6E63",   # taupe
 }
 
 _TS_COLOR     = "#263238"   # dark blue-grey — time series
@@ -69,12 +75,18 @@ def _method_label(method: str) -> str:
     _labels = {
         "ac1":          "AC1",
         "variance":     "Variance",
+        "skewness":     "Skewness",
+        "lambda_ac1":   "λ  (AC1)",
+        "lambda_var":   "λ  (Var)",
         "lambda_glsar": "λ  (GLSAR)",
         "lambda_ols":   "λ  (OLS)",
         "lambda_acs":   "λ  (ACS)",
         "lambda_psd":   "λ  (PSD)",
         "lambda_km":    "λ  (KM)",
+        "lambda_dmd":   "|eig|  (DMD)",
+        "lambda_dmd_floquet": "|eig|  (DMD-Floquet)",
         "rosa":         "λ  (ROSA)",
+        "spatial_corr": "Spatial corr.",
     }
     return _labels.get(method, method)
 

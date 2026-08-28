@@ -58,6 +58,7 @@ RECOMMENDED_MIN_WINDOW: dict = {
     "lambda_km":    100,  # non-parametric KM needs many samples; 200+ ideal
     "rosa":         30,   # spectral ratio needs adequate frequency resolution
     "lambda_dmd":   50,   # DMD needs enough snapshots to resolve the operator
+    "lambda_dmd_floquet": 48,  # needs several periods; default period=12 -> ~4 cycles
     "spatial_corr": 30,   # Pearson correlation needs enough samples per cell
 }
 
@@ -89,13 +90,20 @@ _MIN_WINDOW_REASON: dict = {
         "making spectral fitting unreliable.",
     "lambda_km":
         "Non-parametric Kramers-Moyal estimation requires kernel density "
-        "estimation; ~200 samples is strongly recommended, 100 is the minimum.",
+        "estimation; ~200 samples is strongly recommended and 100 is the "
+        "recommended minimum (the estimator itself returns NaN below a hard "
+        "floor of 50 samples).",
     "rosa":
-        "The spectral ratio method needs adequate frequency resolution "
-        "in both bands; ~30 samples is the practical minimum.",
+        "ROSA fits the response-to-forcing spectral ratio, which needs "
+        "adequate periodogram frequency resolution; ~30 samples is the "
+        "practical minimum.",
     "lambda_dmd":
         "DMD requires more snapshots than state dimensions to solve the "
         "linear operator; ~50 samples is the practical minimum.",
+    "lambda_dmd_floquet":
+        "Floquet DMD fits a period-T map, so the window must span several "
+        "periods; use at least ~(num_cycles+1)*period samples (~48 for the "
+        "default period=12).",
     "spatial_corr":
         "Pearson correlation between center cell and neighbors requires sufficient samples "
         "for a stable estimate; ~30 samples per window is the practical minimum.",
@@ -155,6 +163,14 @@ def estimate_ac1(
     float
         Empirical lag-1 autocorrelation.
 
+    References
+    ----------
+    Held, H. & Kleinen, T. (2004). Geophysical Research Letters, 31, L23207.
+    https://doi.org/10.1029/2004GL020972
+
+    Dakos, V., et al. (2008). PNAS, 105(38), 14308-14312.
+    https://doi.org/10.1073/pnas.0802430105
+
     -------
     checked by Lana on 2026-05-19
     """
@@ -191,6 +207,15 @@ def estimate_variance(
     -------
     float
         Sample variance (ddof=1).
+
+    References
+    ----------
+    Held, H. & Kleinen, T. (2004). Geophysical Research Letters, 31, L23207.
+    https://doi.org/10.1029/2004GL020972
+
+    Dakos, V., et al. (2008). PNAS, 105(38), 14308-14312.
+    https://doi.org/10.1073/pnas.0802430105
+
     -------
     checked by Lana on 2026-05-19
     """
@@ -252,15 +277,21 @@ def estimate_a_glsar(
     detrend: bool = True,
 ) -> float:
     """
-    Slope of Generalised Least Squares AR(1) (GLSAR).
+    Difference-regression slope from Generalised Least Squares AR(1) (GLSAR).
 
-    Fits the regression x(t) = φ·x(t−1) + ε(t) using Generalised Least Squares with an AR(1) noise model.
+    Fits the differenced regression ``dx = a·x(t) + ε(t)`` (with
+    ``dx = x(t+1) − x(t)``) using Generalised Least Squares with an AR(1)
+    noise model, and returns the slope ``a``.  This slope equals ``φ − 1``,
+    where ``φ`` is the AR(1) coefficient of ``x(t+1) = φ·x(t) + ε``; the
+    continuous-time restoring rate follows as ``λ = log(a + 1)/Δt`` (see
+    :func:`estimate_lambda_glsar`).
 
     GLS is preferred over plain OLS because the regression residuals are
-    themselves autocorrelated; ignoring this leads to underestimated φ.
-    The iterative GLSAR procedure corrects for this bias.
+    themselves autocorrelated; ignoring this biases the slope.  The iterative
+    GLSAR procedure corrects for this.
 
-    **CSD signature**: a increases toward 1.
+    **CSD signature**: ``a`` (= φ − 1) is negative for a stable system and
+    increases toward 0 as resilience is lost.
 
     Parameters
     ----------
@@ -274,19 +305,18 @@ def estimate_a_glsar(
     Returns
     -------
     float
-        Generalized AR(1) parameter φ (between 0 and 1 for stable systems).
-    
-    -------
-    checked by Lana on 2026-05-19
+        Difference-regression slope ``a = φ − 1`` (negative for stable
+        systems, in ``(−1, 0)``; increases toward 0 near a bifurcation).
     """
     import statsmodels.api as sm
 
     x = _prep(x, detrend)
-    dx = x[1:] - x[:-1]
-    x = sm.add_constant(x)
-
+    # Guard on the raw data column *before* add_constant, otherwise np.var
+    # would include the constant column and never be zero.
     if len(x) < 6 or np.var(x) == 0:
         return np.nan
+    dx = x[1:] - x[:-1]
+    x = sm.add_constant(x)
     try:
         model = sm.GLSAR(endog=dx, exog=x[:-1], rho=1)
         result = model.iterative_fit(maxiter=10, rtol=1e-4)
@@ -325,7 +355,14 @@ def estimate_lambda_glsar(
     -------
     float
         Continuous-time restoring rate λ (negative for stable systems).
-    
+
+    References
+    ----------
+    Boers, N. (2021). Observation-based early-warning signals for a collapse
+    of the Atlantic Meridional Overturning Circulation.
+    Nature Climate Change, 11, 680-688.
+    https://doi.org/10.1038/s41558-021-01097-4
+
     -------
     checked by Lana on 2026-05-19
     """
@@ -379,7 +416,9 @@ def estimate_lambda_ols(
         return np.nan
     try:
         cv = np.cov(x[1:], x[:-1])
-        phi = cv[0, 1] / (np.var(x[:-1]) + 1e-20)
+        # np.cov uses ddof=1; match it in the denominator variance so phi is
+        # not inflated by a factor n/(n-1).
+        phi = cv[0, 1] / (np.var(x[:-1], ddof=1) + 1e-20)
         if phi <= 0 or not np.isfinite(phi):
             return np.nan
         return np.log(phi) / dt
@@ -418,6 +457,13 @@ def estimate_lambda_ac1(
     -------
     float
         Continuous-time restoring rate λ (negative for stable systems).
+
+    References
+    ----------
+    Smith, T. & Boers, N. (2023). Reliability of vegetation resilience
+    estimates depends on biomass density. Nature Ecology & Evolution,
+    7(11), 1799-1808.
+    https://doi.org/10.1038/s41559-023-02194-7
     """
     x = _prep(x, detrend)
     if len(x) < 4:
@@ -467,6 +513,13 @@ def estimate_lambda_var(
     -------
     float
         Continuous-time restoring rate λ (negative for stable systems).
+
+    References
+    ----------
+    Smith, T. & Boers, N. (2023). Reliability of vegetation resilience
+    estimates depends on biomass density. Nature Ecology & Evolution,
+    7(11), 1799-1808.
+    https://doi.org/10.1038/s41559-023-02194-7
     """
     from scipy.stats import linregress as _linregress
 
@@ -475,8 +528,9 @@ def estimate_lambda_var(
         return np.nan
     try:
         dx = x[1:] - x[:-1]
-        lam_step = _linregress(x[:-1], dx)[0]
-        diff = dx - lam_step * x[:-1]
+        reg = _linregress(x[:-1], dx)
+        lam_step, intercept = reg[0], reg[1]
+        diff = dx - (lam_step * x[:-1] + intercept)
         sigma_noise = float(np.std(diff))
         var = float(np.var(x))
         if var == 0.0 or sigma_noise ** 2 >= var:
@@ -615,10 +669,6 @@ def estimate_lambda_psd(
     ----------
     Morr, A. & Boers, N. (2024). Physical Review X, 14, 021037.
     https://doi.org/10.1103/PhysRevX.14.021037
-
-    Morr, A., Riechers, K., Gorjão, L. R., & Boers, N. (2024).
-    Physical Review Research, 6, 033251.
-    https://doi.org/10.1103/PhysRevResearch.6.033251
     """
     from scipy import optimize
 
@@ -717,8 +767,10 @@ def estimate_lambda_km(
         length n.  For multivariate analysis pass a 2D array where each
         row is one variable and each column is one time step; n_dims and
         n_samples are inferred from the array shape.  Non-parametric
-        estimation requires more data than the parametric methods;
-        ≥ 200 samples is recommended.
+        estimation requires more data than the parametric methods: the hard
+        floor below which NaN is returned is 50 samples, the recommended
+        minimum (see :data:`RECOMMENDED_MIN_WINDOW`) is 100, and ≥ 200 is
+        ideal.
     dt : float
         Physical time step (used to normalise the KM coefficients).
     bin_number : int
@@ -746,22 +798,17 @@ def estimate_lambda_km(
 
     References
     ----------
-    Morr, A. & Boers, N. (2024). Physical Review X, 14, 021037.
-    https://doi.org/10.1103/PhysRevX.14.021037
-
     Morr, A., Riechers, K., Gorjão, L. R., & Boers, N. (2024).
-    Physical Review Research, 6, 033251.
+    Anticipating critical transitions in multidimensional systems driven by
+    time- and state-dependent noise. Physical Review Research, 6, 033251.
     https://doi.org/10.1103/PhysRevResearch.6.033251
-
-    ----------
-    @Andreas, I have not fully checked it but 1d version seems to be the same as what my code does.
     """
     x = np.asarray(x, dtype=float).copy()
 
     if x.ndim == 1:
         # ------------------------------------------------------------------ 1D
         x = _prep(x, detrend)
-        if len(x) < 50:
+        if len(x) < 50:   # hard floor; RECOMMENDED_MIN_WINDOW['lambda_km']=100
             return np.nan
         try:
             from kramersmoyal import km  # type: ignore
@@ -901,82 +948,142 @@ def estimate_lambda_km(
 def estimate_rosa(
     x: np.ndarray,
     dt: float = 1.0,
-    eta: float = 0.5,
     detrend: bool = True,
+    noise: Optional[np.ndarray] = None,
+    noise_psd=None,
 ) -> float:
     """
     Restoring rate via the Ratio Of Spectra Approach (ROSA).
 
-    For a continuous-time OU process, the power spectral density is:
+    For a first-order (OU) system driven by a stochastic forcing ξ,
 
-        S(f) ∝ 1 / (λ² + (2πf)²)
+        dx/dt = -λ x + ξ(t),
 
-    The ratio of spectral power in a low-frequency band to a high-frequency
-    band is therefore a deterministic function of λ.  Inverting this
-    relationship yields a direct estimate of λ without needing to fit the
-    full spectrum.
+    the response and forcing power spectra are related by the transfer
+    function of the system:
 
-    The split between low and high bands is controlled by ``eta``:
-    frequencies below eta × f_Nyquist are the "low" band.
+        S_xx(ω) = S_ξξ(ω) / (ω² + λ²),   ω = 2πf.
 
-    **CSD signature**: λ increases toward 0 (ratio of low/high power grows).
+    ROSA therefore estimates λ from the **ratio** of the response spectrum to
+    the forcing spectrum, R(ω) = S_xx(ω) / S_ξξ(ω) ∝ 1 / (ω² + λ²), which —
+    unlike a plain fit to S_xx — does **not** assume the forcing is white.
+    This is the "beyond white noise" property of the method: as long as the
+    forcing spectrum is supplied (or estimated), coloured/red forcing is
+    handled correctly.
+
+    The forcing spectrum S_ξξ is taken from (in order of precedence):
+
+    * ``noise`` — a forcing/noise **time series**.  Its periodogram is computed
+      and interpolated onto the window's frequency grid.  In the sliding-window
+      pipeline pass a full series aligned with ``x``; it is windowed in sync
+      with ``x`` (see :data:`~csdtools.sliding_window._WINDOWED_KWARGS`), so the
+      forcing may vary in time.
+    * ``noise_psd`` — an explicit forcing PSD, either a callable ``S(ω)`` of the
+      angular frequency ω, or a ``(omegas, values)`` pair that is interpolated
+      onto the window's ω grid.  Treated as stationary (same for every window).
+    * neither — a **white** forcing (``S_ξξ ≡ const``), i.e. a plain Lorentzian
+      fit to S_xx.
+
+    A free amplitude is fitted alongside λ, so an overall scale mismatch
+    between a ``noise`` proxy and the true forcing does not bias λ (which is
+    set by the corner frequency ω = λ of the Lorentzian).
+
+    **CSD signature**: λ increases toward 0.
 
     Parameters
     ----------
     x : array-like
         Pre-processed window.
     dt : float
-        Physical time step.
-    eta : float in (0, 1)
-        Fractional frequency split point.  eta=0.5 places the boundary at
-        the mid-point of the available frequency range.
+        Physical time step.  Frequencies are ``2π`` times the periodogram
+        frequencies in per-unit-time units.
     detrend : bool
-        Remove linear trend within window.
+        Remove linear trend within window (applied to ``x`` and, if given, to
+        the ``noise`` window before their periodograms).
+    noise : array-like or None
+        Forcing/noise time series (see above).  Mutually exclusive with
+        ``noise_psd``.
+    noise_psd : callable or (omegas, values) or None
+        Forcing power spectral density as a function of **angular frequency**
+        ω = 2πf.  A callable is evaluated at the window's ω grid; a
+        ``(omegas, values)`` pair is linearly interpolated onto it.  Mutually
+        exclusive with ``noise``.
 
     Returns
     -------
     float
-        Continuous-time restoring rate λ (negative).
+        Continuous-time restoring rate λ (negative for stable systems).
 
     References
     ----------
     Clarke, J., Huntingford, C., Ritchie, P. D. L., & Cox, P. M. (2023).
+    Seeking more robust early warning signals for climate tipping points:
+    the ratio of spectra method (ROSA).
     Environmental Research Letters, 18(3), 035006.
     https://doi.org/10.1088/1748-9326/acbc8d
     """
     from scipy import optimize, signal
 
+    if noise is not None and noise_psd is not None:
+        raise ValueError("Pass only one of 'noise' or 'noise_psd', not both.")
+
     x = _prep(x, detrend)
     if len(x) < 8:
         return np.nan
     try:
-        freqs, psd = signal.periodogram(x, fs=1.0 / dt)
-        freqs, psd = freqs[1:], psd[1:]   # exclude DC
-        f_split = eta * freqs[-1]
-        low_mask = freqs <= f_split
-        high_mask = freqs > f_split
-        if low_mask.sum() == 0 or high_mask.sum() == 0:
+        # One-sided response periodogram, excluding DC.
+        freqs, S_xx = signal.periodogram(x, fs=1.0 / dt)
+        freqs, S_xx = freqs[1:], S_xx[1:]
+        if len(freqs) < 3:
             return np.nan
+        omega = 2.0 * np.pi * freqs
 
-        S_low = np.mean(psd[low_mask])
-        S_high = np.mean(psd[high_mask]) + 1e-20
-        observed_ratio = S_low / S_high
+        # --- Forcing spectrum S_ff on the window's frequency grid ---
+        if noise is not None:
+            nz = _prep(np.asarray(noise, dtype=float), detrend)
+            if len(nz) < 8:
+                return np.nan
+            f_n, S_n = signal.periodogram(nz, fs=1.0 / dt)
+            # Grids coincide when the noise window matches x in length;
+            # interpolate defensively so mismatched lengths still work.
+            S_ff = np.interp(freqs, f_n[1:], S_n[1:])
+        elif noise_psd is not None:
+            if callable(noise_psd):
+                S_ff = np.asarray(noise_psd(omega), dtype=float)
+            else:
+                om_ref, val_ref = noise_psd
+                S_ff = np.interp(
+                    omega, np.asarray(om_ref, dtype=float),
+                    np.asarray(val_ref, dtype=float),
+                )
+            if S_ff.shape != omega.shape:
+                return np.nan
+        else:
+            S_ff = np.ones_like(S_xx)   # white forcing
 
-        # Mean representative frequencies for each band
-        f_l = np.mean(freqs[low_mask])
-        f_h = np.mean(freqs[high_mask])
+        # Response-to-forcing spectral ratio, keeping usable points only.
+        valid = (np.isfinite(S_ff) & (S_ff > 0.0)
+                 & np.isfinite(S_xx) & (S_xx > 0.0))
+        if valid.sum() < 3:
+            return np.nan
+        R = S_xx[valid] / S_ff[valid]
+        w = omega[valid]
 
-        def theo_ratio(lam_abs: float) -> float:
-            """Theoretical S_low/S_high for an OU process."""
-            return (lam_abs**2 + (2.0 * np.pi * f_h) ** 2) / (
-                lam_abs**2 + (2.0 * np.pi * f_l) ** 2
-            )
+        # Fit R(ω) = A / (ω² + λ²) in log space (robust to periodogram noise).
+        def log_model(w_, log_A, lam):
+            return log_A - np.log(w_ ** 2 + lam ** 2)
 
-        def cost(p: np.ndarray) -> float:
-            return (theo_ratio(np.abs(p[0]) + 1e-10) - observed_ratio) ** 2
-
-        res = optimize.minimize(cost, x0=[0.1], method="Nelder-Mead")
-        return -float(np.abs(res.x[0]))
+        log_A0 = float(np.log(np.median(R)) + np.log(np.median(w) ** 2 + 1.0))
+        popt, _ = optimize.curve_fit(
+            log_model, w, np.log(R),
+            p0=[log_A0, 0.1 / dt],
+            bounds=([-np.inf, 0.0], [np.inf, np.inf]),
+            maxfev=10000,
+        )
+        lam = float(popt[1])
+        if not np.isfinite(lam):
+            return np.nan
+        return -lam
     except Exception:
         return np.nan
 
@@ -1040,6 +1147,14 @@ def estimate_lambda_dmd(
 
     Notes
     -----
+    Unlike the other ``lambda_*`` estimators, this returns the **magnitude of
+    the dominant discrete-time eigenvalue** — a dimensionless number in
+    ``(0, 1)`` for a stable system that grows toward 1 — **not** a
+    continuous-time restoring rate.  It is therefore not on the same scale as
+    ``lambda_glsar`` etc., is not converted via ``log(·)/Δt``, and the ``dt``
+    argument does not affect it.  Only the sign/direction of its trend
+    (increasing = destabilising) is comparable across methods.
+
     Requires the ``pydmd`` package::
 
         pip install pydmd
@@ -1099,6 +1214,188 @@ def estimate_lambda_dmd(
         warnings.warn(
             "The 'pydmd' package is not installed; 'lambda_dmd' is unavailable. "
             "Install with: pip install pydmd",
+            UserWarning,
+        )
+        return np.nan
+    except Exception:
+        return np.nan
+
+
+def estimate_lambda_dmd_floquet(
+    x: np.ndarray,
+    dt: float = 1.0,
+    period: int = 12,
+    embedding_dim: int = 1,
+    tau: int = 1,
+    dmd_rank: int = -1,
+    mean_center: bool = True,
+    standardize: bool = True,
+    detrend: bool = True,
+) -> float:
+    """
+    Dominant Floquet-multiplier magnitude via spatiotemporal DMD.
+
+    Seasonal / spatially-extended counterpart of :func:`estimate_lambda_dmd`.
+    Instead of a one-step operator it fits the *period-T monodromy operator* M
+    that maps the (embedded) system state at time t to its state one full
+    period later, t + ``period``:
+
+        M · s(t) ≈ s(t + T)
+
+    The eigenvalues of M are the **Floquet multipliers**; the dominant one has
+    magnitude < 1 for a stable limit cycle and crosses 1 as resilience is lost.
+    Fitting the period-T map (rather than the one-step map) makes the estimator
+    appropriate for strongly seasonal / periodically-forced data, where a
+    one-step DMD would be dominated by the seasonal cycle itself.
+
+    The state at each time step is the full (multivariate) snapshot — for
+    spatial data, the flattened field of all cells — optionally lifted by
+    time-delay embedding of depth ``embedding_dim`` and lag ``tau``.  Snapshots
+    are mean-centred and/or standardised per feature before the fit (SVD-based
+    DMD cannot handle differing offsets/scales across features).
+
+    Both 1D and nD inputs are accepted: a 1D signal is treated as a single
+    feature.  Input of shape ``(n_features, n_samples)`` has one row per
+    variable / spatial cell and one column per time step.
+
+    **CSD signature**: dominant Floquet-multiplier magnitude increases toward 1.
+
+    Parameters
+    ----------
+    x : array-like, shape (n,) or (n_features, n_samples)
+        Time series window.  For nD input each row is one variable / spatial
+        cell and each column one time step.
+    dt : float
+        Time step (unused; present for API consistency).
+    period : int
+        Fundamental period T in samples (e.g. 12 for monthly data with an
+        annual cycle, 365 for daily data).  The DMD operator maps each state
+        to the state ``period`` samples later.
+    embedding_dim : int
+        Depth of the time-delay embedding of the (spatial) snapshots.
+        ``embedding_dim=1`` uses the raw snapshots.
+    tau : int
+        Lag in samples between successive embedded copies of the state.
+    dmd_rank : int
+        SVD rank truncation for DMD.  ``-1`` keeps all singular values;
+        smaller values filter noise (recommended for high-dimensional fields).
+    mean_center : bool
+        Subtract each feature's mean (over the snapshot columns) before the
+        fit.  Recommended for collections of series with different means.
+    standardize : bool
+        Divide each feature by its standard deviation before the fit.
+        Recommended for collections of series with different scales.
+    detrend : bool
+        Remove a linear trend within the window before embedding (applied per
+        row for nD input).  Smith et al. (2026) instead rely on
+        ``standardize=True``; ``detrend`` is provided for consistency with the
+        other estimators and may be disabled.
+
+    Returns
+    -------
+    float
+        Magnitude of the dominant Floquet multiplier.  In (0, 1) for a stable
+        limit cycle; increases toward 1 as resilience is lost.
+
+    Notes
+    -----
+    Like :func:`estimate_lambda_dmd`, this returns an eigenvalue **magnitude**,
+    not a continuous-time rate, and ``dt`` has no effect.
+
+    The window must be long enough to contain the period shift and the
+    embedding lags — at least ``period + (embedding_dim - 1) * tau + 2``
+    samples — and in practice several periods (``≈ (num_cycles + 1) * period``)
+    for a stable fit; the effective number of cycles is set implicitly by the
+    window size.
+
+    Requires the ``pydmd`` package::
+
+        pip install pydmd
+
+    References
+    ----------
+    Smith, T., Morr, A., Bookhagen, B., & Boers, N. (2026).
+    Predicting instabilities in transient landforms and interconnected
+    ecosystems. Nature Communications, 17(1), 1316.
+    https://doi.org/10.1038/s41467-026-68944-w
+    """
+    x = np.asarray(x, dtype=float).copy()
+
+    if x.ndim == 1:
+        x = x.reshape(1, -1)
+    elif x.ndim != 2:
+        warnings.warn(
+            f"estimate_lambda_dmd_floquet: input must be 1D or 2D (got "
+            f"ndim={x.ndim}); returning NaN.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return np.nan
+
+    n_features, n_samples = x.shape
+    T = int(period)
+    idx_offset = (embedding_dim - 1) * tau
+
+    if T < 1:
+        return np.nan
+    if detrend:
+        for i in range(n_features):
+            x[i] = remove_linear_trend(x[i])
+
+    # Number of X/Y snapshot pairs that fit in the window. The youngest map of
+    # the oldest X state sits at idx_offset; its Y counterpart is T steps ahead,
+    # so the last usable youngest-Y index is n_samples - 1.
+    num_snapshots = n_samples - T - idx_offset
+    if num_snapshots < 2:
+        return np.nan
+
+    try:
+        from pydmd import DMD  # type: ignore
+
+        n_embedded = n_features * embedding_dim
+        X = np.empty((n_embedded, num_snapshots))
+        Y = np.empty((n_embedded, num_snapshots))
+        for j in range(num_snapshots):
+            xi = idx_offset + j
+            yi = xi + T
+            # Embedded state = youngest map first, then lagged copies.
+            X[:, j] = np.concatenate(
+                [x[:, xi - k * tau] for k in range(embedding_dim)]
+            )
+            Y[:, j] = np.concatenate(
+                [x[:, yi - k * tau] for k in range(embedding_dim)]
+            )
+
+        # Per-feature mean-centre / standardise (stats from X, applied to both).
+        if mean_center or standardize:
+            mean_X = np.nanmean(X, axis=1, keepdims=True)
+        if standardize:
+            tmp = X - mean_X if mean_center else X
+            std_X = np.nanstd(tmp, axis=1, keepdims=True)
+            std_X[std_X == 0] = 1.0
+        if mean_center:
+            X = X - mean_X
+            Y = Y - mean_X
+        if standardize:
+            X = X / std_X
+            Y = Y / std_X
+
+        # SVD-based DMD cannot handle NaN/Inf; fill defensively.
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        Y = np.nan_to_num(Y, nan=0.0, posinf=0.0, neginf=0.0)
+
+        dmd = DMD(svd_rank=dmd_rank)
+        dmd.fit(X=X, Y=Y)
+
+        magnitudes = np.abs(dmd.eigs)
+        if len(magnitudes) == 0:
+            return np.nan
+        return float(np.max(magnitudes))
+
+    except ImportError:
+        warnings.warn(
+            "The 'pydmd' package is not installed; 'lambda_dmd_floquet' is "
+            "unavailable. Install with: pip install pydmd",
             UserWarning,
         )
         return np.nan
@@ -1198,12 +1495,13 @@ INDICATOR_REGISTRY: dict = {
     "lambda_km":     (estimate_lambda_km,     True),
     "rosa":          (estimate_rosa,          True),
     "lambda_dmd":    (estimate_lambda_dmd,    False),
+    "lambda_dmd_floquet": (estimate_lambda_dmd_floquet, False),
     "spatial_corr":  (estimate_spatial_corr,  False),
 }
 
 #: Methods that accept a 2D ``(n_dims, n_samples)`` input array.
 #: All other methods expect a 1D array.  Add new multivariate indicators here.
-ND_METHODS: set = {"lambda_km", "lambda_dmd", "spatial_corr"}
+ND_METHODS: set = {"lambda_km", "lambda_dmd", "lambda_dmd_floquet", "spatial_corr"}
 
 #: List of valid method names for ``analyze_timeseries``.
 AVAILABLE_METHODS: list = list(INDICATOR_REGISTRY.keys())

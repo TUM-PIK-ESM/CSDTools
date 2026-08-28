@@ -14,6 +14,12 @@ from typing import Tuple
 
 from .indicators import compute_indicator, AVAILABLE_METHODS, RECOMMENDED_MIN_WINDOW, _MIN_WINDOW_REASON
 
+#: Names of ``method_kwargs`` that are *time-aligned auxiliary series* rather
+#: than static configuration: they have the same length as the time axis of
+#: ``x`` and must be sliced in sync with each window before being handed to the
+#: estimator.  Currently only ``'noise'`` (the forcing series for ``rosa``).
+_WINDOWED_KWARGS: set = {"noise"}
+
 
 def sliding_window_analysis(
     x: np.ndarray,
@@ -38,8 +44,9 @@ def sliding_window_analysis(
         Time series, already globally preprocessed if desired.  Pass a 1D
         array for univariate analysis or a 2D array of shape
         ``(n_dims, n_samples)`` for multivariate analysis.  Multivariate
-        input is only supported by ``'lambda_km'``; windows are sliced along
-        the time axis (axis 1).
+        input is only supported by the multivariate methods (``'lambda_km'``,
+        ``'lambda_dmd'``, ``'lambda_dmd_floquet'``, ``'spatial_corr'``);
+        windows are sliced along the time axis (axis 1).
     method : str
         CSD indicator method from :data:`~csdtools.indicators.AVAILABLE_METHODS`.
     window_size : int
@@ -110,6 +117,19 @@ def sliding_window_analysis(
             stacklevel=2,
         )
 
+    # Separate time-aligned auxiliary series (e.g. the ROSA forcing 'noise')
+    # from static kwargs: these are sliced in sync with each window below.
+    windowed_kwargs = {}
+    for key in list(method_kwargs):
+        if key in _WINDOWED_KWARGS and method_kwargs[key] is not None:
+            arr = np.asarray(method_kwargs.pop(key), dtype=float)
+            if arr.shape[-1] != n:
+                raise ValueError(
+                    f"'{key}' must be a time-aligned series with length {n} "
+                    f"(same as the time axis of x); got shape {arr.shape}."
+                )
+            windowed_kwargs[key] = arr
+
     starts = np.arange(0, n - window_size + 1, step)
     indicator = np.full(len(starts), np.nan)
     times = starts + window_size // 2  # midpoint of each window
@@ -119,8 +139,11 @@ def sliding_window_analysis(
         # Skip windows with too many missing values
         if np.mean(np.isfinite(window)) < min_valid_fraction:
             continue
+        kw = dict(method_kwargs)
+        for key, arr in windowed_kwargs.items():
+            kw[key] = arr[..., i : i + window_size]
         indicator[k] = compute_indicator(
-            window, method, dt=dt, detrend=local_detrend, **method_kwargs
+            window, method, dt=dt, detrend=local_detrend, **kw
         )
 
     return indicator, times.astype(float)

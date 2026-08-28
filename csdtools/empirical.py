@@ -67,10 +67,14 @@ def detect_transitions(
     # Savitzky-Golay requires an odd window length
     av_derivative = signal.savgol_filter(av_derivative, window_length=7, polyorder=1, deriv=0)
     av_derivative = np.array([np.nan]*half_window + list(av_derivative) + [np.nan] * half_window)
-    threshold = np.percentile(np.abs(av_derivative), percentile)
-    av_derivative[av_derivative >= np.nanpercentile(av_derivative, percentile)] = 1
+    # NOTE: this is a rough heuristic that only flags DOWNWARD transitions --
+    # a drop makes (past mean - future mean) positive. Zero out everything
+    # below the percentile threshold (on a copy, leaving av_derivative intact)
+    # so that argrelmax finds peaks among the surviving high-derivative points.
+    masked = av_derivative.copy()
+    masked[av_derivative < np.nanpercentile(av_derivative, percentile)] = 0
     # Find relative maxima in the masked derivative array
-    transition_times = signal.argrelmax(av_derivative, order=1)[0] 
+    transition_times = signal.argrelmax(masked, order=1)[0]
     return transition_times
 
 
@@ -80,6 +84,7 @@ def fit_exponential_recovery(
     transition_idx: int,
     n_local_min: int = 8,
     recovery_window: Optional[int] = 3*12,
+    fit_baseline: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     Fit an exponential recovery curve after a detected transition.
@@ -109,6 +114,15 @@ def fit_exponential_recovery(
         n_local_min << recovery window size to ensure there is data left for fitting.
     recovery_window : Optional[int]
         The window size for the recovery period in number of datapoints (default = 36 being 3 years for monthly data)
+    fit_baseline : bool
+        Recovery model selector.  If ``False`` (default), the legacy behaviour
+        is used: the post-minimum segment is de-meaned and an offset-free
+        exponential ``A·exp(λt)`` is fitted.  If ``True``, a three-parameter
+        model ``c + A·exp(λt)`` is fitted directly (no de-meaning), so the
+        equilibrium level ``c`` the system recovers to is estimated explicitly.
+        This matches the physical model ``x(t) = x_eq + A·exp(λt)`` in the
+        summary above and is the more principled choice, but it is opt-in so
+        that existing results remain reproducible.
 
     Returns
     -------
@@ -155,8 +169,7 @@ def fit_exponential_recovery(
 
     # Find the closest local minima to start the fitting from
     armin = np.nanargmin(fitting[:n_local_min])
-    fitting_min = fitting[armin:]
-    fitting_min = fitting_min - np.nanmean(fitting_min) # make sure mean is 0, however, one might to change this to ensure the system RECOVERS to zero, not having a zero mean
+    fitting_seg = fitting[armin:]
 
     # See how far the data drops during the transition (to catch spurious transitions)
     raw_drop = fitting_raw[0] - fitting_raw[armin]
@@ -167,20 +180,43 @@ def fit_exponential_recovery(
         # jacobian (partial derivates) for faster and more stable fitting
         jac = np.array([np.exp(b*t), a*t*np.exp(b*t)]).T
         return jac
-    
-    try:
-        trange = np.arange(fitting_min.shape[0])
-        p0 = [fitting_min[0], -0.05]  # Initial guess: [a, lam]
-        bounds = ([-np.inf,-np.inf], [0, 0]) # [min a, min lam], [max a, max lam]
+    def exp_model_baseline(t, A, lam, c):
+        return c + A * np.exp(lam * t)
 
-        popt, _ = optimize.curve_fit(exp_model, trange, fitting_min, p0=p0, jac=exp_jacobian, bounds=bounds)
-        resid   = fitting_min - exp_model(trange, *popt)
+    try:
+        trange = np.arange(fitting_seg.shape[0])
+        if fit_baseline:
+            # Three-parameter recovery to an explicit equilibrium offset c:
+            #   x(t) = c + A*exp(lam*t)   (matches x(t) = x_eq + A*exp(lam*t)).
+            # No de-meaning; c is estimated directly.
+            fitting_min = fitting_seg
+            tail_mean = float(np.nanmean(fitting_min[len(fitting_min) // 2:]))
+            p0 = [fitting_min[0] - tail_mean, -0.05, tail_mean]  # [A, lam, c]
+            bounds = ([-np.inf, -np.inf, -np.inf], [0, 0, np.inf])
+            popt, _ = optimize.curve_fit(
+                exp_model_baseline, trange, fitting_min, p0=p0, bounds=bounds)
+            model_at = exp_model_baseline(trange, *popt)
+            baseline = float(popt[2])
+        else:
+            # Legacy default: de-mean the segment and fit an offset-free
+            # exponential A*exp(lam*t).  Kept as the default so existing
+            # results remain reproducible (see fit_baseline in the docstring).
+            fitting_min = fitting_seg - np.nanmean(fitting_seg)  # make mean 0
+            p0 = [fitting_min[0], -0.05]  # Initial guess: [A, lam]
+            bounds = ([-np.inf, -np.inf], [0, 0])  # [min A, min lam], [max ...]
+            popt, _ = optimize.curve_fit(
+                exp_model, trange, fitting_min, p0=p0, jac=exp_jacobian, bounds=bounds)
+            model_at = exp_model(trange, *popt)
+            baseline = 0.0
+
+        resid = fitting_min - model_at
         ss_res = np.sum(resid**2)
         ss_tot = np.sum((fitting_min - np.mean(fitting_min))**2)
-        r_sq = 1.0 - ss_res / (ss_tot + 1e-20) # for stability in case of zero variance
+        r_sq = 1.0 - ss_res / (ss_tot + 1e-20)  # for stability if zero variance
         return {
             "lambda_empirical": float(popt[1]),
             "amplitude": float(popt[0]),
+            "baseline": baseline,
             "r_squared": float(r_sq),
             "transition_idx": int(transition_idx),
             "fit_start_idx": int(transition_idx + armin),
@@ -199,8 +235,9 @@ def empirical_recovery_rate(
     window_size: int = 100,
     transition_percentile: float = 99.0,
     n_local_min: int = 8,
-    min_r_squared: float = 0.5,
+    min_r_squared: float = -np.inf,
     raw_drop_min: Optional[float] = None,
+    fit_baseline: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Detect transitions and estimate empirical recovery rates.
@@ -222,7 +259,14 @@ def empirical_recovery_rate(
     n_local_min : int
         Number of local minima to search after each transition.
     min_r_squared : float
-        Minimum R² for a recovery fit to be included in the output.
+        Minimum R² for a recovery fit to be included in the output.  Defaults
+        to ``-inf``, i.e. no R² filtering (every fit that passes the other
+        criteria is returned).  Set a positive value (e.g. 0.5) to discard
+        poorly-fitting recoveries.
+    fit_baseline : bool
+        Forwarded to :func:`fit_exponential_recovery`.  If ``True``, fit the
+        three-parameter ``c + A·exp(λt)`` recovery model instead of the default
+        de-meaned offset-free exponential.
 
     Returns
     -------
@@ -249,9 +293,14 @@ def empirical_recovery_rate(
         # Avoid fitting overlapping recovery windows
         if any(abs(idx - u) < window_size // 2 for u in used):
             continue
-        fit = fit_exponential_recovery(draw, ddetr, idx, n_local_min)
-        if fit is not None: 
-            if fit["raw_drop"] >= raw_drop_min and fit["KS_pval"] > 0.05 and fit["lambda_empirical"] > -3: # additional criteria to filter out spurious transitions 
+        fit = fit_exponential_recovery(draw, ddetr, idx, n_local_min,
+                                       fit_baseline=fit_baseline)
+        if fit is not None:
+            # additional criteria to filter out spurious transitions
+            if (fit["raw_drop"] >= raw_drop_min
+                    and fit["KS_pval"] > 0.05
+                    and fit["lambda_empirical"] > -3
+                    and fit["r_squared"] >= min_r_squared):
                 results.append(fit)
                 used.add(idx)
 

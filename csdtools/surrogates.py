@@ -14,11 +14,11 @@ with the same spectral shape could produce by chance.
 
 References
 ----------
-Theiler, J., et al. (1992). Physica D, 58, 77–94.
-https://doi.org/10.1016/0167-2789(92)90102-S
-
-Dakos, V., et al. (2008). PNAS, 105(38), 14308–14312.
-https://doi.org/10.1073/pnas.0802430105
+Ben-Yami, M., Skiba, V., Bathiany, S., & Boers, N. (2023).
+Uncertainties in critical slowing down indicators of observation-based
+fingerprints of the Atlantic Overturning Circulation.
+Nature Communications, 14, 8344.
+https://doi.org/10.1038/s41467-023-44046-9
 """
 
 import numpy as np

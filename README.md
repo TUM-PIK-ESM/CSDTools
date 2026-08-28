@@ -124,6 +124,8 @@ autocorrelation equals φ = exp(λΔt).  As λ → 0, AC1 → 1.
 result = analyze_timeseries(x, method='ac1', window_size=100)
 ```
 
+**References**: [Held & Kleinen (2004)][Held2004]; [Dakos et al. (2008)][Dakos2008].
+
 ---
 
 ### Variance
@@ -139,6 +141,8 @@ variance diverges.
 ```python
 result = analyze_timeseries(x, method='variance', window_size=100)
 ```
+
+**References**: [Held & Kleinen (2004)][Held2004]; [Dakos et al. (2008)][Dakos2008].
 
 ---
 
@@ -185,6 +189,8 @@ two estimators are asymptotically equivalent.
 result = analyze_timeseries(x, method='lambda_ac1', window_size=100)
 ```
 
+**References**: [Smith & Boers (2023)][SmithBoers2023].
+
 ---
 
 ### Lambda via Variance
@@ -211,6 +217,8 @@ than CSD; requires that σ²_noise < V (not guaranteed in very short windows).
 result = analyze_timeseries(x, method='lambda_var', window_size=100)
 ```
 
+**References**: [Smith & Boers (2023)][SmithBoers2023].
+
 ---
 
 ### Lambda via GLSAR
@@ -232,7 +240,7 @@ this leads to a downward bias in φ.
 result = analyze_timeseries(x, method='lambda_glsar', dt=1.0, window_size=100)
 ```
 
-**References**: [Held & Kleinen (2004)][Held2004]; [Dakos et al. (2008)][Dakos2008]; [Boers (2021)][Boers2021].
+**References**: [Boers (2021)][Boers2021].
 
 ---
 
@@ -297,7 +305,7 @@ time-domain autocorrelation estimates.
 result = analyze_timeseries(x, method='lambda_psd', window_size=300)
 ```
 
-**References**: [Morr & Boers (2024)][Morr2024a]; [Morr et al. (2024)][Morr2024b].
+**References**: [Morr & Boers (2024)][Morr2024a].
 
 ---
 
@@ -330,7 +338,20 @@ result = analyze_timeseries(x, method='lambda_km', dt=1.0,
 result = analyze_timeseries(x_nd, method='lambda_km', window_size=300)
 ```
 
-**References**: [Morr & Boers (2024)][Morr2024a]; [Morr et al. (2024)][Morr2024b].
+**References**: [Morr et al. (2024)][Morr2024b].
+
+> **Reproducing the original paper.** The Kramers-Moyal estimator in
+> Morr et al. (2024) used a data-adaptive kernel bandwidth
+> `bw = 14 · σ_window / bin_number` (with `σ_window` the standard deviation of
+> the window) and detrended each window while **keeping its mean**, selecting
+> the retained bins symmetrically around that mean (the stable state). The
+> defaults here instead delegate the 1-D bandwidth to `kramersmoyal` and
+> detrend each window to zero mean, so estimates differ slightly. To reproduce
+> the original, use `bin_number=50` and `center_fraction=0.5` and pass an
+> explicit `bw`; note that the original bandwidth is *per-window adaptive*
+> (`14·σ_window/bin_number`), which the single scalar `bw` argument can only
+> match exactly when the window variance is roughly constant. The nD branch
+> already applies the `n_dims·14/bin_number` heuristic internally.
 
 ---
 
@@ -370,33 +391,96 @@ result = analyze_timeseries(x_nd, method='lambda_dmd', window_size=200)
 
 ---
 
+### DMD — Floquet (seasonal / spatial)
+
+**Method name**: `'lambda_dmd_floquet'`
+
+The seasonal / spatially-extended counterpart of `lambda_dmd`. Instead of a
+one-step operator it fits the **period-T monodromy operator** `M` that maps the
+(embedded) system state at time *t* to its state one full period later,
+*t + T*:
+
+```
+M · s(t) ≈ s(t + T)
+```
+
+The eigenvalues of `M` are the **Floquet multipliers**; the dominant magnitude
+is < 1 for a stable limit cycle and crosses 1 as resilience is lost. Fitting
+the period-T map (rather than the one-step map) makes the estimator appropriate
+for strongly **seasonal / periodically forced** data, where a one-step DMD is
+dominated by the seasonal cycle itself. For **nD input** the state at each time
+step is the full (flattened) spatial field, optionally time-delay embedded;
+snapshots are mean-centred and standardised per feature before the fit.
+
+**CSD signature**: dominant Floquet-multiplier magnitude increases toward 1.
+
+**Pros**: Designed for seasonal and spatially extended systems; the same
+interface handles 1D and nD data.
+**Cons**: Requires the `pydmd` package and a window spanning several periods
+(`≈ (num_cycles + 1) × period` samples); `period` must be set to the data's
+cycle length.
+
+```python
+# Monthly data with an annual cycle (period=12); window spans ~4 years
+result = analyze_timeseries(x, method='lambda_dmd_floquet', window_size=60,
+                            period=12, embedding_dim=1)
+
+# Spatial field — x_nd has shape (n_cells, n_samples)
+result = analyze_timeseries(x_nd, method='lambda_dmd_floquet', window_size=60,
+                            period=12, dmd_rank=5, standardize=True)
+```
+
+Like `lambda_dmd`, this returns an eigenvalue **magnitude**, not a
+continuous-time rate.
+
+**References**: [Smith et al. (2026)][Smith2026].
+
+---
+
 ### ROSA (Ratio of Spectra)
 
 **Method name**: `'rosa'`
 
-Introduced by Clarke et al. (2023) as a more robust spectral EWS indicator.
-The **Ratio Of Spectra Approach** computes the ratio of spectral power in a
-low-frequency band to a high-frequency band:
+The **Ratio Of Spectra Approach** of Clarke et al. (2023). For a first-order
+(OU) system driven by a forcing ξ, the response and forcing spectra are related
+through the transfer function:
 
 ```
-R = ⟨S(f < η f_Nyq)⟩ / ⟨S(f > η f_Nyq)⟩
+S_xx(ω) = S_ξξ(ω) / (ω² + λ²),   ω = 2π f
 ```
 
-For an OU process this ratio is a deterministic function of λ:
+ROSA fits λ to the **ratio** `R(ω) = S_xx(ω) / S_ξξ(ω) ∝ 1 / (ω² + λ²)`. Because
+the forcing spectrum is divided out, the method does **not** assume white
+forcing — this is its "beyond white noise" property, appropriate for red/coloured
+driving noise. A free amplitude is fitted alongside λ, so a scale mismatch
+between a forcing proxy and the true forcing does not bias λ (which is set by the
+corner frequency ω = λ).
 
-```
-R(λ) = (λ² + (2π f_high)²) / (λ² + (2π f_low)²)
-```
+The forcing spectrum `S_ξξ` is supplied via one of:
 
-Inverting this gives an estimate of λ.  The frequency split parameter
-`eta` (default 0.5) controls the boundary between the two bands.
+- `noise=<time series>` — a forcing/noise series; its periodogram is used. In the
+  sliding-window pipeline pass a **full series aligned with `x`**; it is windowed
+  in sync with each window, so the forcing spectrum **may vary in time**.
+- `noise_psd=<callable S(ω)>` or `noise_psd=(omegas, values)` — an explicit,
+  stationary forcing PSD as a function of **angular frequency** ω = 2πf.
+- *neither* — a **white** forcing (plain Lorentzian fit to `S_xx`).
 
-**Pros**: More robust to certain types of non-stationarity than full-spectrum
-fitting; computationally efficient.  
-**Cons**: Assumes an OU-like spectrum; performance depends on `eta`.
+**Pros**: Correctly handles coloured/red forcing when the forcing spectrum is
+known or can be estimated; time-varying forcing supported via a windowed `noise`
+series.
+**Cons**: Requires a forcing estimate to realise the "beyond white noise"
+benefit; assumes first-order (OU) response dynamics.
 
 ```python
-result = analyze_timeseries(x, method='rosa', window_size=100, eta=0.5)
+# White-forcing fallback (no forcing supplied)
+result = analyze_timeseries(x, method='rosa', window_size=100)
+
+# Coloured forcing supplied as an analytic PSD S(ω) (here AR(1)-like red noise)
+S = lambda w: 1.0 / (w**2 + 0.5**2)
+result = analyze_timeseries(x, method='rosa', window_size=100, noise_psd=S)
+
+# Time-varying forcing: a series aligned with x, windowed in sync
+result = analyze_timeseries(x, method='rosa', window_size=100, noise=eta)
 ```
 
 **References**: [Clarke et al. (2023)][Clarke2023].
@@ -556,7 +640,8 @@ highly non-stationary data).
 | `'lambda_psd'` | Restoring rate via PSD fit | 1D | Full spectral information; ≥ 300 pts/window |
 | `'lambda_km'` | Restoring rate via Kramers-Moyal | **1D or nD** | Non-parametric; ≥ 300 pts/window |
 | `'lambda_dmd'` | Dominant DMD eigenvalue magnitude | **1D or nD** | Operator-based; time-delay embedding for 1D |
-| `'rosa'` | Ratio of spectral bands | 1D | Robust to some non-stationarities |
+| `'lambda_dmd_floquet'` | Dominant Floquet-multiplier magnitude | **1D or nD** | Seasonal / spatial fields; period-T DMD map |
+| `'rosa'` | Response/forcing spectral ratio | 1D | Coloured (non-white) forcing; needs a forcing estimate |
 | `'spatial_corr'` | Mean spatial correlation | **nD** | Spatially extended systems |
 
 Methods marked **nD** accept a `(n_dims, n_samples)` array as input and are
@@ -1100,12 +1185,18 @@ Example scripts are in `csdtools/examples/`:
 |--------|-------------|
 | `basic_analysis.py` | Run all univariate methods on a synthetic CSD series, compare Kendall τ values, test significance. |
 | `significance_testing.py` | Compare null distributions for CSD vs stationary series; visualise surrogate histograms. |
+| `multivariate_analysis.py` | Apply the nD indicators (`lambda_km`, `lambda_dmd`, `spatial_corr`) to a 2D coupled AR(1) system. |
+| `floquet_dmd_analysis.py` | `lambda_dmd_floquet` on a parametrically forced field whose monodromy multiplier ramps toward 1, vs a stationary control. |
+| `rosa_analysis.py` | `rosa` under coloured forcing: a naive (white) fit gives a spurious CSD signal; supplying the (time-varying) forcing removes it. |
 
 Run from the `CSDTools` directory:
 
 ```bash
 python -m csdtools.examples.basic_analysis
 python -m csdtools.examples.significance_testing
+python -m csdtools.examples.multivariate_analysis
+python -m csdtools.examples.floquet_dmd_analysis
+python -m csdtools.examples.rosa_analysis
 ```
 
 ### All-methods comparison
@@ -1183,6 +1274,11 @@ fingerprints of the Atlantic Overturning Circulation.
 *Nature Communications*, 14, 8344.
 <https://doi.org/10.1038/s41467-023-44046-9>
 
+Smith, T., & Boers, N. (2023).
+Reliability of vegetation resilience estimates depends on biomass density.
+*Nature Ecology & Evolution*, 7(11), 1799–1808.
+<https://doi.org/10.1038/s41559-023-02194-7>
+
 Clarke, J., Huntingford, C., Ritchie, P. D. L., & Cox, P. M. (2023).
 Seeking more robust early warning signals for climate tipping points:
 the ratio of spectra method (ROSA).
@@ -1228,6 +1324,7 @@ Ambiguity of early warning signals for climate tipping points.
 [Boers2021]: https://doi.org/10.1038/s41558-021-01097-4
 [Smith2022]: https://doi.org/10.1038/s41558-022-01352-2
 [BenYami2023]: https://doi.org/10.1038/s41467-023-44046-9
+[SmithBoers2023]: https://doi.org/10.1038/s41559-023-02194-7
 [Clarke2023]: https://doi.org/10.1088/1748-9326/acbc8d
 [Morr2024a]: https://doi.org/10.1103/PhysRevX.14.021037
 [Morr2024b]: https://doi.org/10.1103/PhysRevResearch.6.033251
