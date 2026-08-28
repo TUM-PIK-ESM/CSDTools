@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "csdtools"
-version = "1.0.2"
+version = "1.1.0"   # preliminary bump; not a finalized 1.1 release
 description = "Critical Slowing Down Analysis Toolkit"
 readme = "README.md"
 requires-python = ">=3.9"
