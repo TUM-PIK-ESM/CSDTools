@@ -2,9 +2,9 @@
 Statistical significance testing for CSD indicator trends.
 
 A statistically significant CSD signal requires that the observed trend in
-an indicator is unlikely to have arisen from a stationary process.  Trends
-can be measured by Kendall τ or by an ordinary least-squares slope.  This
-module provides surrogate-based tests:
+an indicator is unlikely to have arisen from a stationary process. Trends
+can be measured with any registered correlation- or slope-based trend method.
+This module provides surrogate-based tests:
 
 1. Generate N Fourier phase surrogates of the observed time series.
 2. Compute the same CSD indicator on each surrogate.
@@ -25,7 +25,11 @@ from typing import Optional, Tuple
 
 from .surrogates import fourier_surrogates
 from .sliding_window import sliding_window_analysis
-from .trend import AVAILABLE_ALTERNATIVES, assess_trend
+from .trend import (
+    AVAILABLE_ALTERNATIVES,
+    AVAILABLE_TREND_METHODS,
+    assess_trend,
+)
 
 
 def surrogate_p_value(
@@ -114,9 +118,9 @@ def significance_test(
         but increase computation time linearly.  1000 is standard.
     seed : int or None
         Random seed for reproducible surrogate generation.
-    trend_method : {'kendall', 'linear'}
-        Statistic used to quantify the indicator trend.  ``'linear'`` uses
-        the OLS slope against physical window time (midpoint index × ``dt``).
+    trend_method : str
+        Registered statistic used to quantify the indicator trend. Slope
+        methods use physical window time (midpoint index × ``dt``).
     trend_alternative : {'two-sided', 'greater', 'less'}
         Alternative hypothesis for the analytical trend p-value.  The
         analytical p-value itself is not returned by this function, but the
@@ -129,7 +133,7 @@ def significance_test(
     Returns
     -------
     observed_statistic : float
-        Kendall τ or OLS slope of the observed indicator trend.
+        Selected statistic of the observed indicator trend.
     p_value : float
         Fraction of surrogate statistics at least as extreme as observed.
     surrogate_statistics : np.ndarray, shape (n_surrogates,)
@@ -148,10 +152,15 @@ def significance_test(
             f"Unknown surrogate alternative '{surrogate_alternative}'. "
             f"Choose from: {list(AVAILABLE_ALTERNATIVES)}"
         )
+    if trend_method not in AVAILABLE_TREND_METHODS:
+        raise ValueError(
+            f"Unknown trend method '{trend_method}'. "
+            f"Choose from: {list(AVAILABLE_TREND_METHODS)}"
+        )
 
     # Observed indicator and selected trend statistic.  Window midpoints are
-    # converted to physical time so OLS slopes are not mechanically rescaled
-    # by ``step`` and are expressed per unit of ``dt``.
+    # converted to physical time so slope statistics are not mechanically
+    # rescaled by ``step`` and are expressed per unit of ``dt``.
     ind, times = sliding_window_analysis(
         x, method, window_size, step, dt, local_detrend, **method_kwargs
     )

@@ -52,10 +52,10 @@ surrogates
     Fourier phase surrogate generation.
 
 significance
-    Surrogate-based significance testing of Kendall or linear trends.
+    Surrogate-based significance testing of registered trend statistics.
 
 trend
-    Kendall-rank and ordinary least-squares trend assessment.
+    Correlation- and slope-based trend assessment.
 
 spatial
     Spatial correlation analysis and distance matrix utilities.
@@ -128,26 +128,25 @@ class CSDResult:
         Sliding window size (samples).
     detrend_method : str or None
         Global preprocessing applied before windowing.
-    trend_method : {'kendall', 'linear'}
+    trend_method : str
         Selected trend assessment.
     trend_statistic : float
-        Kendall τ or OLS slope, depending on ``trend_method``.
-    trend_p_value : float
-        Analytical p-value for the selected trend statistic.
+        Statistic produced by the selected trend method.
+    trend_p_value : float or None
+        Analytical p-value for the selected trend statistic. ``None`` when
+        the method has no native analytical test.
     trend_alternative : {'two-sided', 'greater', 'less'}
         Alternative hypothesis used for the analytical p-value.
     surrogate_statistics : np.ndarray or None
         Null distribution of the selected trend statistic.
     surrogate_alternative : {'greater', 'less', 'two-sided'}
         Alternative used for the surrogate p-value.
-    trend_intercept : float or None
-        OLS intercept for ``trend_method='linear'``.
-    trend_standard_error : float or None
-        Standard error of the OLS slope for ``trend_method='linear'``.
-    trend_r_squared : float or None
-        OLS R² for ``trend_method='linear'``.
+    trend_details : dict
+        Method-specific diagnostics. For example, OLS supplies its intercept,
+        slope standard error, and R²; Theil–Sen supplies its intercept and
+        slope confidence interval.
     dt : float
-        Physical sampling interval used to scale linear-trend time.
+        Physical sampling interval used to scale trend time.
     """
 
     indicator: np.ndarray
@@ -158,19 +157,12 @@ class CSDResult:
     detrend_method: Optional[str]
     trend_method: str
     trend_statistic: float
-    trend_p_value: float
+    trend_p_value: Optional[float]
     trend_alternative: str
     surrogate_statistics: Optional[np.ndarray]
     surrogate_alternative: str
-    trend_intercept: Optional[float]
-    trend_standard_error: Optional[float]
-    trend_r_squared: Optional[float]
+    trend_details: dict
     dt: float
-
-    @property
-    def linear_slope(self) -> Optional[float]:
-        """OLS slope when ``trend_method='linear'``, otherwise ``None``."""
-        return self.trend_statistic if self.trend_method == "linear" else None
 
 
 def analyze_timeseries(
@@ -198,7 +190,7 @@ def analyze_timeseries(
 
     1. Globally preprocesses the time series (optional detrending).
     2. Computes the chosen CSD indicator in a sliding window.
-    3. Measures the trend via Kendall τ or an OLS slope.
+    3. Measures the trend with the selected registered trend method.
     4. Optionally assesses statistical significance via Fourier surrogates.
 
     Parameters
@@ -284,10 +276,10 @@ def analyze_timeseries(
         time ∝ n_surrogates.
     n_surrogates : int
         Number of surrogates for significance testing.  1000 is standard.
-    trend_method : {'kendall', 'linear'}
-        Trend statistic applied to the sliding-window indicator.  Kendall τ
-        is the default.  ``'linear'`` uses the OLS slope against physical
-        window time (midpoint index × ``dt``).
+    trend_method : str
+        Trend statistic applied to the sliding-window indicator. Choose from
+        :data:`AVAILABLE_TREND_METHODS`; ``'kendall'`` is the default. Slope
+        methods use physical window time (midpoint index × ``dt``).
     trend_alternative : {'two-sided', 'greater', 'less'}
         Alternative hypothesis for the analytical trend p-value.  The default
         preserves the existing two-sided Kendall test behavior.
@@ -341,12 +333,12 @@ def analyze_timeseries(
     ... )
     >>> print(f"p = {result.surrogate_p_value:.3f}")
 
-    Linear-regression trend assessment:
+    Alternative trend assessment:
 
     >>> result = analyze_timeseries(
     ...     x, method='ac1', window_size=100, trend_method='linear'
     ... )
-    >>> print(result.linear_slope, result.trend_p_value)
+    >>> print(result.trend_statistic, result.trend_p_value)
 
     Seasonal data (monthly, 12-month period) with STL detrending:
 
@@ -449,7 +441,7 @@ def analyze_timeseries(
     )
 
     # --- Trend assessment -------------------------------------------------
-    # Use physical window time so linear slopes are expressed per unit of dt
+    # Use physical window time so slopes are expressed per unit of dt
     # rather than being mechanically rescaled by the selected window step.
     trend = assess_trend(
         indicator,
@@ -496,12 +488,10 @@ def analyze_timeseries(
         detrend_method=detrend,
         trend_method=trend_method,
         trend_statistic=float(trend.statistic),
-        trend_p_value=float(trend.p_value),
+        trend_p_value=trend.p_value,
         trend_alternative=trend_alternative,
         surrogate_statistics=surr_statistics,
         surrogate_alternative=surrogate_alternative,
-        trend_intercept=trend.intercept,
-        trend_standard_error=trend.standard_error,
-        trend_r_squared=trend.r_squared,
+        trend_details=dict(trend.details),
         dt=float(dt),
     )

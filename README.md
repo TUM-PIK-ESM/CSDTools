@@ -666,7 +666,7 @@ result = analyze_timeseries(
     detrend_window= 400,               # running-mean bandwidth (samples)
     local_detrend = True,              # also detrend within each window
     dt            = 1.0,               # sampling interval (any consistent unit)
-    trend_method  = 'kendall',         # 'kendall' (default) or 'linear'
+    trend_method  = 'kendall',         # see AVAILABLE_TREND_METHODS
     significance  = False,             # set True to compute surrogate p-value
 )
 
@@ -674,9 +674,11 @@ print(f"Trend statistic = {result.trend_statistic:+.3f}")
 print(f"Analytical p    = {result.trend_p_value:.4f}")
 ```
 
-`trend_method='kendall'` measures a monotonic trend with Kendall's τ.
-`trend_method='linear'` fits an ordinary least-squares (OLS) line and uses its
-slope as the trend statistic.  Kendall is the default trend assessment.
+`trend_method` selects the statistic used to assess the indicator against
+time; Kendall's τ is the default. The available rank correlations, linear
+correlation, and slope estimators are described under
+[Significance Testing](#9-significance-testing) and exposed as
+`csdtools.AVAILABLE_TREND_METHODS`.
 
 The returned `CSDResult` object contains:
 
@@ -684,14 +686,12 @@ The returned `CSDResult` object contains:
 |---|---|
 | `result.indicator` | Array of indicator values, one per window |
 | `result.times` | Array of window-centre indices |
-| `result.trend_method` | Selected trend assessment (`'kendall'` or `'linear'`) |
-| `result.trend_statistic` | Kendall τ or OLS slope |
-| `result.trend_p_value` | Analytical p-value for the selected statistic |
+| `result.trend_method` | Selected trend assessment |
+| `result.trend_statistic` | Statistic produced by that assessment |
+| `result.trend_p_value` | Analytical p-value, or `None` when the method has no native test |
 | `result.surrogate_p_value` | Surrogate p-value (`None` if `significance=False`) |
-| `result.surrogate_statistics` | Null distribution of τ values or slopes (`None` if not run) |
-| `result.trend_intercept` | OLS intercept (`None` for Kendall) |
-| `result.trend_standard_error` | OLS slope standard error (`None` for Kendall) |
-| `result.trend_r_squared` | OLS R² (`None` for Kendall) |
+| `result.surrogate_statistics` | Null distribution of the selected statistic (`None` if not run) |
+| `result.trend_details` | Method-specific diagnostics, such as regression fit values or a slope confidence interval |
 | `result.method` | Method name string |
 | `result.window_size` | Window size used |
 | `result.detrend_method` | Detrending method name |
@@ -766,9 +766,8 @@ fig.savefig("null_dist.png", dpi=150)
 ```
 
 The plot shows a histogram of the selected surrogate statistics—OLS slopes in
-this example—with the observed slope and rejection region marked.  With
-`trend_method='kendall'`, the same function plots the Kendall τ null
-distribution.
+this example—with the observed slope and rejection region marked. The same
+function handles every registered trend statistic.
 
 ---
 
@@ -855,7 +854,7 @@ where each row is one variable and each column is one time step:
 
 Pass the multivariate array directly to `analyze_timeseries`.  The pipeline
 handles preprocessing per row, windowing along the time axis, and the selected
-Kendall or linear trend assessment exactly as for 1D input.  Note that
+trend assessment exactly as for 1D input. Note that
 surrogate significance testing is not yet supported for nD input.
 
 ```python
@@ -920,7 +919,7 @@ result = analyze_timeseries(
     dt=1.0,                 # float; physical time step
     significance=False,     # bool
     n_surrogates=1000,      # int
-    trend_method='kendall', # 'kendall' or 'linear'
+    trend_method='kendall', # see AVAILABLE_TREND_METHODS
     trend_alternative='two-sided',       # analytical test tail
     surrogate_alternative='greater',     # surrogate test tail
     surrogate_seed=None,                 # int or None
@@ -934,16 +933,14 @@ Returns a `CSDResult` with fields:
 |-------|------|-------------|
 | `indicator` | `np.ndarray` | Indicator timeseries |
 | `times` | `np.ndarray` | Window midpoint indices |
-| `trend_method` | `str` | `'kendall'` or `'linear'` |
-| `trend_statistic` | `float` | Kendall τ or OLS slope |
-| `trend_p_value` | `float` | Analytical p-value for the selected statistic |
+| `trend_method` | `str` | Registered trend assessment |
+| `trend_statistic` | `float` | Statistic produced by that assessment |
+| `trend_p_value` | `float` or `None` | Analytical p-value, when supplied by the method |
 | `trend_alternative` | `str` | Alternative used by the analytical test |
 | `surrogate_p_value` | `float` or `None` | Surrogate p-value |
 | `surrogate_statistics` | `np.ndarray` or `None` | Selected statistic's null distribution |
 | `surrogate_alternative` | `str` | Alternative used by the surrogate test |
-| `trend_intercept` | `float` or `None` | OLS intercept |
-| `trend_standard_error` | `float` or `None` | OLS slope standard error |
-| `trend_r_squared` | `float` or `None` | OLS R² |
+| `trend_details` | `dict` | Method-specific fit diagnostics |
 | `method` | `str` | Method used |
 | `window_size` | `int` | Window size used |
 | `detrend_method` | `str` or `None` | Preprocessing used |
@@ -998,8 +995,8 @@ statistic, p_val, surr_statistics = significance_test(
 )
 ```
 
-The returned statistic and surrogate array are Kendall τ values when
-`trend_method='kendall'` and OLS slopes when `trend_method='linear'`.
+The returned statistic and surrogate array use the units of the selected
+trend method.
 
 ---
 
@@ -1016,12 +1013,13 @@ trend = assess_trend(
     method='linear',
     alternative='two-sided',
 )
-print(trend.statistic, trend.p_value, trend.r_squared)
+print(trend.statistic, trend.p_value, trend.details)
 ```
 
-For `method='linear'`, the returned `TrendAssessment` also contains
-`intercept` and `standard_error`.  For `method='kendall'`, those regression
-fields are `None`.
+Method-specific diagnostics are stored in `trend.details`. For example, OLS
+supplies `intercept`, `slope_standard_error`, and `r_squared`; Theil–Sen
+supplies `intercept`, `slope_ci_lower`, `slope_ci_upper`, and
+`confidence_level`.
 
 ---
 
@@ -1063,18 +1061,33 @@ will be removed; if too large, the preprocessing is insufficient.
 ## 9. Significance Testing
 
 A positive trend statistic does *not* by itself confirm CSD—even a stationary
-process can produce a trend by chance in a finite sample.  CSDTools supports
-two trend assessments:
+process can produce a trend by chance in a finite sample. CSDTools supports
+five trend assessments:
 
 | `trend_method` | Statistic | Interpretation |
 |---|---|---|
 | `'kendall'` | Kendall τ | Rank-based strength of a monotonic trend |
+| `'spearman'` | Spearman ρ | Rank-based monotonic association, based on ranked values |
+| `'pearson'` | Pearson r | Dimensionless strength of linear association with time |
 | `'linear'` | OLS slope | Linear change in the indicator per physical time unit |
+| `'theil_sen'` | Theil–Sen slope | Outlier-resistant median slope per physical time unit |
 
-For linear assessment, physical window time is the midpoint sample index
-multiplied by `dt`.  Consequently, the reported slope is not mechanically
+For both slope estimators, physical window time is the midpoint sample index
+multiplied by `dt`. Consequently, the reported slope is not mechanically
 rescaled when `step` changes and is expressed per unit of `dt` (although using
-fewer windows can still change the fitted estimate).
+fewer windows can still change the fitted estimate). Pearson correlation and
+OLS regression test the same simple linear null hypothesis but report
+different effect sizes: dimensionless `r` versus a slope in physical units.
+
+The correlation methods and OLS supply an analytical p-value. Theil–Sen is an
+estimator rather than a standalone hypothesis test, so its
+`trend_p_value` is `None`; its 95% slope confidence interval is available in
+`trend_details`. Its statistic is supported normally by the surrogate
+pipeline, which supplies the significance assessment used here.
+`trend_alternative` does not alter Theil–Sen's fixed two-sided 95% interval.
+Because the exact estimator considers all pairs of indicator windows, it can
+be substantially slower than the other choices for densely sampled, long
+indicator series—especially when repeated over many surrogates.
 
 The standard surrogate approach compares the observed selected statistic
 against its **null distribution** obtained from Fourier phase surrogates:
@@ -1106,11 +1119,11 @@ statistic**.  This one-sided test is appropriate for indicators defined to
 increase under CSD.  Set it to `'less'` for a predicted decrease or
 `'two-sided'` when either direction is meaningful.
 
-`trend_alternative` independently controls the analytical p-value and defaults
-to `'two-sided'`.  The analytical Kendall and OLS p-values assume independent
-indicator observations.  Sliding-window values, especially from overlapping
-windows, are serially dependent; the surrogate p-value is therefore generally
-the more appropriate pipeline-level significance assessment.
+`trend_alternative` independently controls an available analytical p-value and
+defaults to `'two-sided'`. These analytical tests assume independent indicator
+observations. Sliding-window values, especially from overlapping windows, are
+serially dependent; the surrogate p-value is therefore generally the more
+appropriate pipeline-level significance assessment.
 
 **Interpretation**:
 - `p < 0.05`: the CSD trend is statistically significant at the 5% level.
@@ -1136,9 +1149,8 @@ provides three ready-made figure layouts.
 ### `plot_analysis` — single indicator
 
 Two-panel figure: the raw time series in the top panel and the chosen CSD
-indicator below it.  A dashed linear trend line and a stats box showing
-the selected Kendall τ or OLS-slope assessment are overlaid on the indicator
-panel by default.
+indicator below it. A dashed fit or trend guide and a stats box showing the
+selected trend assessment are overlaid on the indicator panel by default.
 
 ```python
 from csdtools import analyze_timeseries, plot_analysis
@@ -1203,8 +1215,8 @@ in which case the method names are used as panel labels automatically.
 ### `plot_significance` — surrogate null distribution
 
 Histogram of the Fourier surrogate null distribution for the selected trend
-statistic.  The observed Kendall τ or OLS slope is marked as a vertical line,
-and the rejection tail or tails selected by `surrogate_alternative` are shaded.
+statistic. The observed value is marked as a vertical line, and the rejection
+tail or tails selected by `surrogate_alternative` are shaded.
 
 Requires `significance=True` in `analyze_timeseries` so the surrogate array
 is stored in `result.surrogate_statistics`.

@@ -58,7 +58,7 @@ print(
 )
 print(
     f"Linear : slope={r_linear.trend_statistic:+.4e} per sample, "
-    f"R^2={r_linear.trend_r_squared:.3f}, "
+    f"R^2={r_linear.trend_details['r_squared']:.3f}, "
     f"analytical p={r_linear.trend_p_value:.4g}, "
     f"surrogate p={r_linear.surrogate_p_value:.4f}"
 )

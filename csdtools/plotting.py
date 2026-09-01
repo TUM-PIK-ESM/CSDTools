@@ -5,7 +5,7 @@ Three main functions are provided:
 
 plot_analysis(x, result, ...)
     Two-panel figure: the raw (or preprocessed) time series in the top
-    panel and a single CSD indicator below it.  A linear trend line and
+    panel and a single CSD indicator below it. A fitted trend line and
     selected trend statistic / p-value annotation can be overlaid on the
     indicator panel.
 
@@ -29,7 +29,13 @@ import matplotlib.ticker as mticker
 from matplotlib.gridspec import GridSpec
 from typing import Optional, Dict, List, Sequence, Tuple, Union
 
-from .trend import trend_statistic_label
+from .trend import (
+    fitted_trend_line,
+    format_trend_details,
+    format_trend_statistic,
+    trend_analytical_test_label,
+    trend_statistic_label,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -64,25 +70,15 @@ _SURR_EDGE    = "#78909C"   # darker grey — surrogate histogram edge
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _trend_line(result) -> np.ndarray:
-    """OLS linear fit to an indicator, evaluated at all window times."""
-    times = np.asarray(result.times, dtype=float)
-    indicator = np.asarray(result.indicator, dtype=float)
-    mask = np.isfinite(indicator)
-    if mask.sum() < 2:
-        return np.full_like(indicator, np.nan)
-
-    if (
-        result.trend_method == "linear"
-        and result.trend_intercept is not None
-        and np.isfinite(result.trend_intercept)
-        and np.isfinite(result.trend_statistic)
-    ):
-        physical_times = times * result.dt
-        return result.trend_intercept + result.trend_statistic * physical_times
-
-    c = np.polyfit(times[mask], indicator[mask], 1)
-    return np.polyval(c, times)
+def _trend_line(result) -> Tuple[np.ndarray, str]:
+    """Selected fit or visual guide, evaluated at all window times."""
+    return fitted_trend_line(
+        result.indicator,
+        np.asarray(result.times, dtype=float) * result.dt,
+        result.trend_method,
+        result.trend_statistic,
+        result.trend_details,
+    )
 
 
 def _trend_values(result):
@@ -93,13 +89,6 @@ def _trend_values(result):
         result.trend_p_value,
         result.surrogate_statistics,
     )
-
-
-def _format_statistic(method: str, value: float) -> str:
-    """Format a trend statistic with an appropriate scale."""
-    if method == "kendall":
-        return f"{value:+.3f}"
-    return f"{value:+.3e}"
 
 
 def _method_label(method: str) -> str:
@@ -158,18 +147,13 @@ def _annotate_stats(
         surrogate_p if surrogate_p is not None else p_value
     )
     label = trend_statistic_label(method)
-    lines = [f"{label} = {_format_statistic(method, statistic)}  {stars}"]
-    if np.isfinite(p_value):
-        p_label = "Kendall" if method == "kendall" else "OLS"
+    lines = [f"{label} = {format_trend_statistic(method, statistic)}  {stars}"]
+    p_label = trend_analytical_test_label(method)
+    if p_value is not None and np.isfinite(p_value):
         lines.append(f"p ({p_label}) = {p_value:.4f}")
     if surrogate_p is not None and np.isfinite(surrogate_p):
         lines.append(f"p (surrogate) = {surrogate_p:.4f}")
-    if (
-        method == "linear"
-        and result.trend_r_squared is not None
-        and np.isfinite(result.trend_r_squared)
-    ):
-        lines.append(f"R² = {result.trend_r_squared:.3f}")
+    lines.extend(format_trend_details(method, result.trend_details))
 
     x_pos = 0.02 if "left" in loc else 0.98
     y_pos = 0.97 if "upper" in loc else 0.03
@@ -209,12 +193,11 @@ def _draw_indicator_panel(
     # Indicator line
     ax.plot(t, ind, color=color, lw=1.2, alpha=0.9, **indicator_kwargs)
 
-    # Linear trend overlay
+    # Method-specific fit or visual trend guide
     if show_trend:
-        trend = _trend_line(result)
-        # Map trend back to physical time axis if provided
+        trend, trend_label = _trend_line(result)
         ax.plot(t, trend, color=_TREND_COLOR, lw=1.8, ls="--",
-                label="OLS trend", zorder=5)
+                label=trend_label, zorder=5)
 
     # Y-axis label
     ax.set_ylabel(_method_label(result.method), fontsize=9)
@@ -273,7 +256,7 @@ def plot_analysis(
     ts_label : str
         Y-axis label for the time series panel.
     show_trend : bool
-        Overlay the fitted OLS trend line on the indicator.
+        Overlay the selected fit or visual trend guide on the indicator.
     show_significance : bool
         Add a stats box with the selected trend statistic and p-values.
     ts_color : str or None
@@ -383,7 +366,7 @@ def plot_multi_analysis(
     ts_label : str
         Y-axis label for the time series panel.
     show_trend : bool
-        Overlay fitted OLS trend lines on each indicator panel.
+        Overlay the selected fit or visual trend guide on each indicator panel.
     show_significance : bool
         Add stats boxes to each indicator panel.
     stats_loc : str
@@ -490,7 +473,7 @@ def plot_significance(
     """
     Histogram of the Fourier surrogate null distribution of a trend statistic.
 
-    The observed Kendall τ or OLS slope is marked with a vertical line.  The
+    The observed trend statistic is marked with a vertical line. The
     rejection tail(s) follow ``result.surrogate_alternative`` and the
     surrogate p-value is shown in a stats box.
 
@@ -511,7 +494,7 @@ def plot_significance(
     surrogate_color : str or None
         Fill colour for the histogram bars.
     observed_color : str or None
-        Colour for the observed-τ vertical line.
+        Colour for the observed-statistic vertical line.
     ax : plt.Axes or None
         If provided, draws onto this axes instead of creating a new figure.
 
@@ -590,7 +573,7 @@ def plot_significance(
         observed, color=oc, lw=2.2, zorder=5,
         label=(
             f"Observed {statistic_label} = "
-            f"{_format_statistic(trend_method, observed)}"
+            f"{format_trend_statistic(trend_method, observed)}"
         ),
     )
 
@@ -652,7 +635,7 @@ def plot_indicator_on_ax(
     time_axis : array-like or None
         Physical time values; falls back to sample indices.
     show_trend : bool
-        Draw the fitted OLS trend line.
+        Draw the selected fit or visual trend guide.
     show_significance : bool
         Draw stats box.
     color : str or None
