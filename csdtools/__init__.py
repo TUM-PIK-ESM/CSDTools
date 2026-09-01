@@ -13,7 +13,7 @@ Quick start
 >>> rng = np.random.default_rng(42)
 >>> x = rng.standard_normal(500)
 >>> result = analyze_timeseries(x, method='lambda_glsar', window_size=100)
->>> print(f"Kendall τ = {result.kendall_tau:.3f}")
+>>> print(f"Kendall τ = {result.trend_statistic:.3f}")
 
 With significance testing
 -------------------------
@@ -52,7 +52,10 @@ surrogates
     Fourier phase surrogate generation.
 
 significance
-    Surrogate-based significance testing of indicator trends.
+    Surrogate-based significance testing of Kendall or linear trends.
+
+trend
+    Kendall-rank and ordinary least-squares trend assessment.
 
 spatial
     Spatial correlation analysis and distance matrix utilities.
@@ -73,7 +76,13 @@ from .indicators import AVAILABLE_METHODS, ND_METHODS, compute_indicator
 from .preprocessing import preprocess
 from .sliding_window import sliding_window_analysis
 from .significance import significance_test
-from ._utils import kendall_tau, strip_nans
+from .trend import (
+    AVAILABLE_ALTERNATIVES,
+    AVAILABLE_TREND_METHODS,
+    TrendAssessment,
+    assess_trend,
+)
+from ._utils import strip_nans
 from .plotting import plot_analysis, plot_multi_analysis, plot_significance
 
 __version__ = "1.1.0"   # preliminary bump; subject to change before the 1.1 release
@@ -84,6 +93,9 @@ __all__ = [
     "CSDResult",
     "AVAILABLE_METHODS",
     "ND_METHODS",
+    "AVAILABLE_TREND_METHODS",
+    "TrendAssessment",
+    "assess_trend",
     "preprocess",
     "compute_indicator",
     "significance_test",
@@ -106,38 +118,59 @@ class CSDResult:
         that could not be computed.
     times : np.ndarray
         Index of the midpoint of each window in the original time series.
-    kendall_tau : float
-        Kendall τ rank correlation of the indicator against its time index.
-        Positive → increasing trend → loss of stability.
-    kendall_p_value : float
-        Two-sided p-value for the Kendall τ under H₀ of no monotonic trend.
     surrogate_p_value : float or None
-        One-sided p-value from Fourier surrogate testing.  Fraction of
-        surrogates whose indicator trend is at least as large as observed.
-        ``None`` if ``significance=False`` was passed to
-        :func:`analyze_timeseries`.
-    surrogate_taus : np.ndarray or None
-        Full array of Kendall τ values from the surrogate null distribution,
-        shape (n_surrogates,).  Stored when ``significance=True`` so that
-        :func:`~csdtools.plotting.plot_significance` can render the histogram.
-        ``None`` otherwise.
+        P-value from Fourier surrogate testing using
+        ``surrogate_alternative``.  ``None`` if ``significance=False`` was
+        passed to :func:`analyze_timeseries`.
     method : str
         Name of the CSD indicator method used.
     window_size : int
         Sliding window size (samples).
     detrend_method : str or None
         Global preprocessing applied before windowing.
+    trend_method : {'kendall', 'linear'}
+        Selected trend assessment.
+    trend_statistic : float
+        Kendall τ or OLS slope, depending on ``trend_method``.
+    trend_p_value : float
+        Analytical p-value for the selected trend statistic.
+    trend_alternative : {'two-sided', 'greater', 'less'}
+        Alternative hypothesis used for the analytical p-value.
+    surrogate_statistics : np.ndarray or None
+        Null distribution of the selected trend statistic.
+    surrogate_alternative : {'greater', 'less', 'two-sided'}
+        Alternative used for the surrogate p-value.
+    trend_intercept : float or None
+        OLS intercept for ``trend_method='linear'``.
+    trend_standard_error : float or None
+        Standard error of the OLS slope for ``trend_method='linear'``.
+    trend_r_squared : float or None
+        OLS R² for ``trend_method='linear'``.
+    dt : float
+        Physical sampling interval used to scale linear-trend time.
     """
 
     indicator: np.ndarray
     times: np.ndarray
-    kendall_tau: float
-    kendall_p_value: float
     surrogate_p_value: Optional[float]
-    surrogate_taus: Optional[np.ndarray]
     method: str
     window_size: int
     detrend_method: Optional[str]
+    trend_method: str
+    trend_statistic: float
+    trend_p_value: float
+    trend_alternative: str
+    surrogate_statistics: Optional[np.ndarray]
+    surrogate_alternative: str
+    trend_intercept: Optional[float]
+    trend_standard_error: Optional[float]
+    trend_r_squared: Optional[float]
+    dt: float
+
+    @property
+    def linear_slope(self) -> Optional[float]:
+        """OLS slope when ``trend_method='linear'``, otherwise ``None``."""
+        return self.trend_statistic if self.trend_method == "linear" else None
 
 
 def analyze_timeseries(
@@ -152,6 +185,10 @@ def analyze_timeseries(
     exclude_nan_neighbors: bool = False,
     significance: bool = False,
     n_surrogates: int = 1000,
+    trend_method: str = "kendall",
+    trend_alternative: str = "two-sided",
+    surrogate_alternative: str = "greater",
+    surrogate_seed: Optional[int] = None,
     **method_kwargs,
 ) -> CSDResult:
     """
@@ -161,7 +198,7 @@ def analyze_timeseries(
 
     1. Globally preprocesses the time series (optional detrending).
     2. Computes the chosen CSD indicator in a sliding window.
-    3. Measures the monotonic trend via Kendall τ.
+    3. Measures the trend via Kendall τ or an OLS slope.
     4. Optionally assesses statistical significance via Fourier surrogates.
 
     Parameters
@@ -171,8 +208,8 @@ def analyze_timeseries(
         array of shape ``(n_dims, n_samples)`` for multivariate analysis.
         Multivariate input is only supported by the multivariate methods
         (``'lambda_km'``, ``'lambda_dmd'``, ``'lambda_dmd_floquet'``,
-        ``'spatial_corr'``); global preprocessing and significance testing are
-        applied per dimension.
+        ``'spatial_corr'``).  Global preprocessing is applied per dimension;
+        surrogate significance testing is not yet supported for 2D input.
     method : str
         CSD indicator to use.  Choose from :data:`AVAILABLE_METHODS`:
 
@@ -243,9 +280,24 @@ def analyze_timeseries(
         estimate.  The option has no effect when the input contains no NaNs.
     significance : bool
         If ``True``, generate ``n_surrogates`` Fourier phase surrogates and
-        compute a one-sided p-value.  Adds computation time ∝ n_surrogates.
+        compute a p-value using ``surrogate_alternative``.  Adds computation
+        time ∝ n_surrogates.
     n_surrogates : int
         Number of surrogates for significance testing.  1000 is standard.
+    trend_method : {'kendall', 'linear'}
+        Trend statistic applied to the sliding-window indicator.  Kendall τ
+        is the default.  ``'linear'`` uses the OLS slope against physical
+        window time (midpoint index × ``dt``).
+    trend_alternative : {'two-sided', 'greater', 'less'}
+        Alternative hypothesis for the analytical trend p-value.  The default
+        preserves the existing two-sided Kendall test behavior.
+    surrogate_alternative : {'greater', 'less', 'two-sided'}
+        Tail of the surrogate null distribution used for the surrogate
+        p-value.  ``'greater'`` is the CSD-oriented default because the
+        package's indicators are generally defined to increase as resilience
+        declines.
+    surrogate_seed : int or None
+        Random seed for reproducible Fourier surrogates.
     **method_kwargs
         Extra keyword arguments forwarded to the indicator function.
         Examples:
@@ -265,8 +317,8 @@ def analyze_timeseries(
     Returns
     -------
     CSDResult
-        Object containing the indicator timeseries, Kendall τ, and
-        optionally the surrogate p-value.
+        Object containing the indicator timeseries, selected trend assessment,
+        and optionally the surrogate p-value.
 
     Raises
     ------
@@ -279,7 +331,7 @@ def analyze_timeseries(
     Basic analysis with default settings:
 
     >>> result = analyze_timeseries(x, method='lambda_glsar', window_size=100)
-    >>> print(result.kendall_tau, result.kendall_p_value)
+    >>> print(result.trend_statistic, result.trend_p_value)
 
     With significance testing:
 
@@ -288,6 +340,13 @@ def analyze_timeseries(
     ...     significance=True, n_surrogates=1000,
     ... )
     >>> print(f"p = {result.surrogate_p_value:.3f}")
+
+    Linear-regression trend assessment:
+
+    >>> result = analyze_timeseries(
+    ...     x, method='ac1', window_size=100, trend_method='linear'
+    ... )
+    >>> print(result.linear_slope, result.trend_p_value)
 
     Seasonal data (monthly, 12-month period) with STL detrending:
 
@@ -300,14 +359,14 @@ def analyze_timeseries(
 
     >>> for m in ['ac1', 'variance', 'lambda_glsar']:
     ...     r = analyze_timeseries(x, method=m, window_size=100)
-    ...     print(f"{m:15s}  τ={r.kendall_tau:+.3f}")
+    ...     print(f"{m:15s}  τ={r.trend_statistic:+.3f}")
 
     Multivariate KM analysis (x_nd has shape (n_dims, n_samples)):
 
     >>> result = analyze_timeseries(
     ...     x_nd, method='lambda_km', window_size=300, dt=1.0
     ... )
-    >>> print(result.kendall_tau)
+    >>> print(result.trend_statistic)
     """
     x = np.asarray(x, dtype=float)
 
@@ -321,6 +380,22 @@ def analyze_timeseries(
     if method not in AVAILABLE_METHODS:
         raise ValueError(
             f"Unknown method '{method}'. Choose from: {AVAILABLE_METHODS}"
+        )
+
+    if trend_method not in AVAILABLE_TREND_METHODS:
+        raise ValueError(
+            f"Unknown trend method '{trend_method}'. "
+            f"Choose from: {list(AVAILABLE_TREND_METHODS)}"
+        )
+    if trend_alternative not in AVAILABLE_ALTERNATIVES:
+        raise ValueError(
+            f"Unknown trend alternative '{trend_alternative}'. "
+            f"Choose from: {list(AVAILABLE_ALTERNATIVES)}"
+        )
+    if surrogate_alternative not in AVAILABLE_ALTERNATIVES:
+        raise ValueError(
+            f"Unknown surrogate alternative '{surrogate_alternative}'. "
+            f"Choose from: {list(AVAILABLE_ALTERNATIVES)}"
         )
 
     if multivariate and method not in ND_METHODS:
@@ -373,12 +448,19 @@ def analyze_timeseries(
         x_proc, method, window_size, step, dt, local_detrend, **method_kwargs
     )
 
-    # --- Kendall τ trend -------------------------------------------------
-    tau, kp = kendall_tau(indicator)
+    # --- Trend assessment -------------------------------------------------
+    # Use physical window time so linear slopes are expressed per unit of dt
+    # rather than being mechanically rescaled by the selected window step.
+    trend = assess_trend(
+        indicator,
+        times=times * dt,
+        method=trend_method,
+        alternative=trend_alternative,
+    )
 
     # --- Significance (optional) ----------------------------------------
     surr_p: Optional[float] = None
-    surr_taus: Optional[np.ndarray] = None
+    surr_statistics: Optional[np.ndarray] = None
     if significance:
         if multivariate:
             warnings.warn(
@@ -390,7 +472,7 @@ def analyze_timeseries(
                 stacklevel=2,
             )
         else:
-            _, surr_p, surr_taus = significance_test(
+            _, surr_p, surr_statistics = significance_test(
                 x_proc,
                 method,
                 window_size,
@@ -398,17 +480,28 @@ def analyze_timeseries(
                 dt,
                 local_detrend,
                 n_surrogates=n_surrogates,
+                seed=surrogate_seed,
+                trend_method=trend_method,
+                trend_alternative=trend_alternative,
+                surrogate_alternative=surrogate_alternative,
                 **method_kwargs,
             )
 
     return CSDResult(
         indicator=indicator,
         times=times,
-        kendall_tau=float(tau),
-        kendall_p_value=float(kp),
         surrogate_p_value=surr_p,
-        surrogate_taus=surr_taus,
         method=method,
         window_size=window_size,
         detrend_method=detrend,
+        trend_method=trend_method,
+        trend_statistic=float(trend.statistic),
+        trend_p_value=float(trend.p_value),
+        trend_alternative=trend_alternative,
+        surrogate_statistics=surr_statistics,
+        surrogate_alternative=surrogate_alternative,
+        trend_intercept=trend.intercept,
+        trend_standard_error=trend.standard_error,
+        trend_r_squared=trend.r_squared,
+        dt=float(dt),
     )

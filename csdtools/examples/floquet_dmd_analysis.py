@@ -96,8 +96,8 @@ r_ctrl = analyze_timeseries(x_ctrl, **common)
 
 print(f"{'Series':<22} {'Kendall τ':>10} {'p (Kendall)':>13}")
 print("-" * 47)
-print(f"{'CSD (ρ: 0.30→0.95)':<22} {r_csd.kendall_tau:>+10.3f} {r_csd.kendall_p_value:>13.2e}")
-print(f"{'Control (ρ=0.30)':<22} {r_ctrl.kendall_tau:>+10.3f} {r_ctrl.kendall_p_value:>13.2e}")
+print(f"{'CSD (ρ: 0.30→0.95)':<22} {r_csd.trend_statistic:>+10.3f} {r_csd.trend_p_value:>13.2e}")
+print(f"{'Control (ρ=0.30)':<22} {r_ctrl.trend_statistic:>+10.3f} {r_ctrl.trend_p_value:>13.2e}")
 print("-" * 47)
 
 # ──────────────────────────────────────────────────────────────────────────────

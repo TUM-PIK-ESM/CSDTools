@@ -69,7 +69,7 @@ for m in methods:
         local_detrend=True,
     )
     results[m] = r
-    print(f"{m:<20} {r.kendall_tau:>+10.3f} {r.kendall_p_value:>12.4f}")
+    print(f"{m:<20} {r.trend_statistic:>+10.3f} {r.trend_p_value:>12.4f}")
 
 print("=" * 60)
 
@@ -88,7 +88,7 @@ r_sig = analyze_timeseries(
     n_surrogates=500,
 )
 
-print(f"  Observed Kendall τ : {r_sig.kendall_tau:+.3f}")
+print(f"  Observed Kendall τ : {r_sig.trend_statistic:+.3f}")
 print(f"  Surrogate p-value  : {r_sig.surrogate_p_value:.4f}")
 
 # ──────────────────────────────────────────────────────────────────────────────

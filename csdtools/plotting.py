@@ -6,16 +6,17 @@ Three main functions are provided:
 plot_analysis(x, result, ...)
     Two-panel figure: the raw (or preprocessed) time series in the top
     panel and a single CSD indicator below it.  A linear trend line and
-    Kendall τ / p-value annotation can be overlaid on the indicator panel.
+    selected trend statistic / p-value annotation can be overlaid on the
+    indicator panel.
 
 plot_multi_analysis(x, results, ...)
     Stacked figure: the time series in the top panel followed by one
     panel per method.  Ideal for comparing multiple indicators side by side.
 
 plot_significance(result, ...)
-    Histogram of the Fourier surrogate null distribution of Kendall τ
-    with the observed value marked.  Requires significance=True to have
-    been passed to analyze_timeseries() so that surrogate_taus is stored.
+    Histogram of the Fourier surrogate null distribution of the selected
+    trend statistic with the observed value marked.  Requires
+    significance=True to have been passed to analyze_timeseries().
 
 All functions return the (fig, axes) pair for further customisation.
 """
@@ -27,6 +28,8 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 from matplotlib.gridspec import GridSpec
 from typing import Optional, Dict, List, Sequence, Tuple, Union
+
+from .trend import trend_statistic_label
 
 
 # ---------------------------------------------------------------------------
@@ -61,13 +64,42 @@ _SURR_EDGE    = "#78909C"   # darker grey — surrogate histogram edge
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _trend_line(times: np.ndarray, indicator: np.ndarray) -> np.ndarray:
-    """OLS linear fit to indicator vs times, evaluated at all times."""
+def _trend_line(result) -> np.ndarray:
+    """OLS linear fit to an indicator, evaluated at all window times."""
+    times = np.asarray(result.times, dtype=float)
+    indicator = np.asarray(result.indicator, dtype=float)
     mask = np.isfinite(indicator)
     if mask.sum() < 2:
         return np.full_like(indicator, np.nan)
+
+    if (
+        result.trend_method == "linear"
+        and result.trend_intercept is not None
+        and np.isfinite(result.trend_intercept)
+        and np.isfinite(result.trend_statistic)
+    ):
+        physical_times = times * result.dt
+        return result.trend_intercept + result.trend_statistic * physical_times
+
     c = np.polyfit(times[mask], indicator[mask], 1)
     return np.polyval(c, times)
+
+
+def _trend_values(result):
+    """Return the selected method, statistic, p-value, and surrogates."""
+    return (
+        result.trend_method,
+        result.trend_statistic,
+        result.trend_p_value,
+        result.surrogate_statistics,
+    )
+
+
+def _format_statistic(method: str, value: float) -> str:
+    """Format a trend statistic with an appropriate scale."""
+    if method == "kendall":
+        return f"{value:+.3f}"
+    return f"{value:+.3e}"
 
 
 def _method_label(method: str) -> str:
@@ -106,32 +138,38 @@ def _significance_stars(p: Optional[float]) -> str:
 
 def _annotate_stats(
     ax: plt.Axes,
-    tau: float,
-    kendall_p: float,
-    surrogate_p: Optional[float] = None,
+    result,
     loc: str = "upper left",
 ) -> None:
     """
-    Place a stats box with Kendall τ and p-values on an axes.
+    Place a stats box with the selected trend statistic and p-values.
 
     Parameters
     ----------
     ax : plt.Axes
-    tau : float
-        Observed Kendall τ.
-    kendall_p : float
-        p-value for the Kendall τ test.
-    surrogate_p : float or None
-        Surrogate-based p-value.
+    result : CSDResult
+        Analysis result containing the selected trend assessment.
     loc : str
         'upper left', 'upper right', 'lower left', or 'lower right'.
     """
-    stars = _significance_stars(surrogate_p if surrogate_p is not None else kendall_p)
-    lines = [f"Kendall τ = {tau:+.3f}  {stars}"]
-    if np.isfinite(kendall_p):
-        lines.append(f"p (Kendall) = {kendall_p:.4f}")
+    method, statistic, p_value, _ = _trend_values(result)
+    surrogate_p = result.surrogate_p_value
+    stars = _significance_stars(
+        surrogate_p if surrogate_p is not None else p_value
+    )
+    label = trend_statistic_label(method)
+    lines = [f"{label} = {_format_statistic(method, statistic)}  {stars}"]
+    if np.isfinite(p_value):
+        p_label = "Kendall" if method == "kendall" else "OLS"
+        lines.append(f"p ({p_label}) = {p_value:.4f}")
     if surrogate_p is not None and np.isfinite(surrogate_p):
         lines.append(f"p (surrogate) = {surrogate_p:.4f}")
+    if (
+        method == "linear"
+        and result.trend_r_squared is not None
+        and np.isfinite(result.trend_r_squared)
+    ):
+        lines.append(f"R² = {result.trend_r_squared:.3f}")
 
     x_pos = 0.02 if "left" in loc else 0.98
     y_pos = 0.97 if "upper" in loc else 0.03
@@ -173,10 +211,10 @@ def _draw_indicator_panel(
 
     # Linear trend overlay
     if show_trend:
-        trend = _trend_line(result.times, ind)
+        trend = _trend_line(result)
         # Map trend back to physical time axis if provided
         ax.plot(t, trend, color=_TREND_COLOR, lw=1.8, ls="--",
-                label="Linear trend", zorder=5)
+                label="OLS trend", zorder=5)
 
     # Y-axis label
     ax.set_ylabel(_method_label(result.method), fontsize=9)
@@ -185,9 +223,7 @@ def _draw_indicator_panel(
     if show_significance:
         _annotate_stats(
             ax,
-            result.kendall_tau,
-            result.kendall_p_value,
-            result.surrogate_p_value,
+            result,
             loc=stats_loc,
         )
 
@@ -237,9 +273,9 @@ def plot_analysis(
     ts_label : str
         Y-axis label for the time series panel.
     show_trend : bool
-        Overlay a dashed linear trend line on the indicator.
+        Overlay the fitted OLS trend line on the indicator.
     show_significance : bool
-        Add a stats box with Kendall τ and p-values to the indicator panel.
+        Add a stats box with the selected trend statistic and p-values.
     ts_color : str or None
         Line colour for the time series.  Defaults to dark blue-grey.
     indicator_color : str or None
@@ -347,7 +383,7 @@ def plot_multi_analysis(
     ts_label : str
         Y-axis label for the time series panel.
     show_trend : bool
-        Overlay linear trend lines on each indicator panel.
+        Overlay fitted OLS trend lines on each indicator panel.
     show_significance : bool
         Add stats boxes to each indicator panel.
     stats_loc : str
@@ -452,19 +488,20 @@ def plot_significance(
     ax: Optional[plt.Axes] = None,
 ) -> Tuple[plt.Figure, plt.Axes]:
     """
-    Histogram of the Fourier surrogate null distribution of Kendall τ.
+    Histogram of the Fourier surrogate null distribution of a trend statistic.
 
-    The observed Kendall τ is marked with a vertical line; the one-sided
-    p-value (fraction of surrogates ≥ observed τ) is shown in a stats box.
+    The observed Kendall τ or OLS slope is marked with a vertical line.  The
+    rejection tail(s) follow ``result.surrogate_alternative`` and the
+    surrogate p-value is shown in a stats box.
 
     Requires ``significance=True`` to have been passed to
-    :func:`~csdtools.analyze_timeseries`, which stores the surrogate τ array
-    in ``result.surrogate_taus``.
+    :func:`~csdtools.analyze_timeseries`, which stores the null distribution
+    in ``result.surrogate_statistics``.
 
     Parameters
     ----------
     result : CSDResult
-        Result with ``surrogate_taus`` populated.
+        Result with ``surrogate_statistics`` populated.
     figsize : (float, float)
         Figure size (used only when ``ax`` is None).
     title : str or None
@@ -486,7 +523,7 @@ def plot_significance(
     Raises
     ------
     ValueError
-        If ``result.surrogate_taus`` is None (significance not computed).
+        If the surrogate statistics are unavailable.
 
     Examples
     --------
@@ -495,13 +532,17 @@ def plot_significance(
     >>> fig, ax = plot_significance(result)
     >>> plt.show()
     """
-    if result.surrogate_taus is None:
+    trend_method, observed, _, surrogate_statistics = _trend_values(result)
+    if surrogate_statistics is None:
         raise ValueError(
-            "result.surrogate_taus is None.  Re-run analyze_timeseries() "
+            "result.surrogate_statistics is None.  Re-run analyze_timeseries() "
             "with significance=True to compute the surrogate null distribution."
         )
 
-    surr   = result.surrogate_taus[np.isfinite(result.surrogate_taus)]
+    surr = np.asarray(surrogate_statistics, dtype=float)
+    surr = surr[np.isfinite(surr)]
+    if len(surr) == 0:
+        raise ValueError("The surrogate null distribution has no finite values.")
     sc     = surrogate_color or _SURR_COLOR
     oc     = observed_color  or METHOD_COLORS.get(result.method, "#D32F2F")
 
@@ -518,10 +559,19 @@ def plot_significance(
         zorder=2,
     )
 
-    # Shade the tail beyond the observed τ (rejection region)
-    tau_obs = result.kendall_tau
+    # Shade the rejection tail(s) selected for the surrogate test.
     counts, edges = np.histogram(surr, bins=bins)
-    tail_mask = edges[:-1] >= tau_obs
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    alternative = result.surrogate_alternative
+    if alternative == "greater":
+        tail_mask = centers >= observed
+        tail_label = "Upper-tail region"
+    elif alternative == "less":
+        tail_mask = centers <= observed
+        tail_label = "Lower-tail region"
+    else:
+        tail_mask = np.abs(centers) >= np.abs(observed)
+        tail_label = "Two-sided region"
     if tail_mask.any():
         ax.bar(
             edges[:-1][tail_mask],
@@ -531,13 +581,17 @@ def plot_significance(
             color=oc,
             alpha=0.45,
             zorder=3,
-            label="Rejection region",
+            label=tail_label,
         )
 
-    # Observed τ line
+    # Observed statistic line
+    statistic_label = trend_statistic_label(trend_method)
     ax.axvline(
-        tau_obs, color=oc, lw=2.2, zorder=5,
-        label=f"Observed τ = {tau_obs:+.3f}",
+        observed, color=oc, lw=2.2, zorder=5,
+        label=(
+            f"Observed {statistic_label} = "
+            f"{_format_statistic(trend_method, observed)}"
+        ),
     )
 
     # Null-distribution mean reference line
@@ -561,7 +615,7 @@ def plot_significance(
                   edgecolor="#CFD8DC", alpha=0.9),
     )
 
-    ax.set_xlabel("Kendall τ", fontsize=9)
+    ax.set_xlabel(statistic_label, fontsize=9)
     ax.set_ylabel("Count", fontsize=9)
     ax.tick_params(labelsize=8)
     ax.legend(fontsize=8.5, loc="upper left")
@@ -598,7 +652,7 @@ def plot_indicator_on_ax(
     time_axis : array-like or None
         Physical time values; falls back to sample indices.
     show_trend : bool
-        Draw linear trend line.
+        Draw the fitted OLS trend line.
     show_significance : bool
         Draw stats box.
     color : str or None

@@ -4,7 +4,6 @@ Internal utility functions shared across csdtools modules.
 
 import warnings
 import numpy as np
-from typing import Tuple
 
 
 def validate_timeseries(x: np.ndarray, min_length: int = 10) -> np.ndarray:
@@ -118,31 +117,3 @@ def strip_nans(
     )
 
     return x[valid]
-
-
-def kendall_tau(x: np.ndarray) -> Tuple[float, float]:
-    """
-    Compute Kendall tau rank correlation of x against its own time index.
-
-    Used to quantify the monotonic trend in a CSD indicator timeseries.
-
-    Parameters
-    ----------
-    x : np.ndarray
-        1D indicator timeseries.
-
-    Returns
-    -------
-    tau : float
-        Kendall tau statistic (positive → increasing trend).
-    p_value : float
-        Two-sided p-value under H0 of no monotonic trend.
-    """
-    from scipy.stats import kendalltau as _kt
-
-    t = np.arange(len(x))
-    mask = np.isfinite(x)
-    if mask.sum() < 3:
-        return np.nan, np.nan
-    tau, pval = _kt(t[mask], x[mask])
-    return float(tau), float(pval)

@@ -70,9 +70,9 @@ r_noise = analyze_timeseries(x, **common, noise=xi)   # true forcing, windowed
 
 print(f"{'Analysis':<22} {'Kendall τ':>10} {'p (Kendall)':>13}  interpretation")
 print("-" * 70)
-print(f"{'white (naive)':<22} {r_white.kendall_tau:>+10.3f} {r_white.kendall_p_value:>13.2e}"
+print(f"{'white (naive)':<22} {r_white.trend_statistic:>+10.3f} {r_white.trend_p_value:>13.2e}"
       f"  SPURIOUS CSD (false alarm)")
-print(f"{'forcing-aware (noise)':<22} {r_noise.kendall_tau:>+10.3f} {r_noise.kendall_p_value:>13.2e}"
+print(f"{'forcing-aware (noise)':<22} {r_noise.trend_statistic:>+10.3f} {r_noise.trend_p_value:>13.2e}"
       f"  no false trend (correct)")
 print("-" * 70)
 print(f"Ground truth: λ = -{LAM_TRUE:.2f} (constant) — resilience does NOT change.\n")

@@ -86,7 +86,7 @@ r_sc  = analyze_timeseries(
 results = {"lambda_km": r_km, "lambda_dmd": r_dmd, "spatial_corr": r_sc}
 
 for name, r in results.items():
-    print(f"{name:<15} {r.kendall_tau:>+10.3f} {r.kendall_p_value:>12.4f}")
+    print(f"{name:<15} {r.trend_statistic:>+10.3f} {r.trend_p_value:>12.4f}")
 
 print("-" * 40)
 
