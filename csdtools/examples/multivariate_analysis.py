@@ -129,6 +129,7 @@ for ax, (r, color, ylabel) in zip(axes[1:], indicator_cfg):
         show_significance=True,
         color=color,
         stats_loc="upper left",
+        additional_trend_methods=("linear",),
     )
     ax.set_ylabel(ylabel, fontsize=8)
 

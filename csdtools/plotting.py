@@ -30,6 +30,7 @@ from matplotlib.gridspec import GridSpec
 from typing import Optional, Dict, List, Sequence, Tuple, Union
 
 from .trend import (
+    assess_trend,
     fitted_trend_line,
     format_trend_details,
     format_trend_statistic,
@@ -129,6 +130,7 @@ def _annotate_stats(
     ax: plt.Axes,
     result,
     loc: str = "upper left",
+    additional_trend_methods: Sequence[str] = (),
 ) -> None:
     """
     Place a stats box with the selected trend statistic and p-values.
@@ -140,6 +142,9 @@ def _annotate_stats(
         Analysis result containing the selected trend assessment.
     loc : str
         'upper left', 'upper right', 'lower left', or 'lower right'.
+    additional_trend_methods : sequence of str
+        Further registered trend assessments to compute and show below the
+        selected assessment.
     """
     method, statistic, p_value, _ = _trend_values(result)
     surrogate_p = result.surrogate_p_value
@@ -154,6 +159,28 @@ def _annotate_stats(
     if surrogate_p is not None and np.isfinite(surrogate_p):
         lines.append(f"p (surrogate) = {surrogate_p:.4f}")
     lines.extend(format_trend_details(method, result.trend_details))
+
+    trend_times = np.asarray(result.times, dtype=float) * result.dt
+    shown_methods = {method}
+    for additional_method in additional_trend_methods:
+        if additional_method in shown_methods:
+            continue
+        shown_methods.add(additional_method)
+        additional = assess_trend(
+            result.indicator,
+            times=trend_times,
+            method=additional_method,
+            alternative=result.trend_alternative,
+        )
+        lines.append(
+            f"{trend_statistic_label(additional_method)} = "
+            f"{format_trend_statistic(additional_method, additional.statistic)}"
+        )
+        additional_p_label = trend_analytical_test_label(additional_method)
+        if additional.p_value is not None and np.isfinite(additional.p_value):
+            lines.append(
+                f"p ({additional_p_label}) = {additional.p_value:.4f}"
+            )
 
     x_pos = 0.02 if "left" in loc else 0.98
     y_pos = 0.97 if "upper" in loc else 0.03
@@ -182,6 +209,7 @@ def _draw_indicator_panel(
     show_significance: bool,
     indicator_kwargs: dict,
     stats_loc: str,
+    additional_trend_methods: Sequence[str],
 ) -> None:
     """
     Render the indicator line, optional trend, and optional stats box
@@ -208,6 +236,7 @@ def _draw_indicator_panel(
             ax,
             result,
             loc=stats_loc,
+            additional_trend_methods=additional_trend_methods,
         )
 
     ax.tick_params(labelsize=8)
@@ -234,6 +263,7 @@ def plot_analysis(
     ts_kwargs: Optional[dict] = None,
     indicator_kwargs: Optional[dict] = None,
     height_ratios: Tuple[float, float] = (1.8, 2.2),
+    additional_trend_methods: Optional[Sequence[str]] = None,
 ) -> Tuple[plt.Figure, np.ndarray]:
     """
     Two-panel figure: time series (top) + CSD indicator (bottom).
@@ -273,6 +303,10 @@ def plot_analysis(
         Extra keyword arguments forwarded to ``ax.plot`` for the indicator.
     height_ratios : (float, float)
         Relative heights of the time series and indicator panels.
+    additional_trend_methods : sequence of str or None
+        Additional registered trend assessments to show in the stats box.
+        They are computed from the existing indicator values; duplicates of
+        ``result.trend_method`` are ignored.
 
     Returns
     -------
@@ -321,6 +355,7 @@ def plot_analysis(
     _draw_indicator_panel(
         ax_ind, result, t_ind, ic,
         show_trend, show_significance, ind_kw, stats_loc,
+        tuple(additional_trend_methods or ()),
     )
     ax_ind.set_xlabel(x_label, fontsize=9)
 
@@ -344,6 +379,7 @@ def plot_multi_analysis(
     ts_color: Optional[str] = None,
     ts_kwargs: Optional[dict] = None,
     indicator_kwargs: Optional[dict] = None,
+    additional_trend_methods: Optional[Sequence[str]] = None,
 ) -> Tuple[plt.Figure, np.ndarray]:
     """
     Stacked figure: time series (top) + one panel per CSD indicator.
@@ -377,6 +413,8 @@ def plot_multi_analysis(
         Extra kwargs for the time series line.
     indicator_kwargs : dict or None
         Extra kwargs for every indicator line.
+    additional_trend_methods : sequence of str or None
+        Additional registered trend assessments to show in every stats box.
 
     Returns
     -------
@@ -442,6 +480,7 @@ def plot_multi_analysis(
         _draw_indicator_panel(
             ax, result, t_ind, color,
             show_trend, show_significance, ind_kw, stats_loc,
+            tuple(additional_trend_methods or ()),
         )
 
         # Use the dict key as the y-label when it differs from the method name
@@ -619,6 +658,7 @@ def plot_indicator_on_ax(
     show_significance: bool = True,
     color: Optional[str] = None,
     stats_loc: str = "upper left",
+    additional_trend_methods: Optional[Sequence[str]] = None,
     **plot_kwargs,
 ) -> plt.Axes:
     """
@@ -642,6 +682,8 @@ def plot_indicator_on_ax(
         Indicator line colour.
     stats_loc : str
         Position of the stats box.
+    additional_trend_methods : sequence of str or None
+        Additional registered trend assessments to show in the stats box.
     **plot_kwargs
         Extra kwargs for the indicator ``ax.plot`` call.
 
@@ -667,5 +709,6 @@ def plot_indicator_on_ax(
     _draw_indicator_panel(
         ax, result, t_ind, c,
         show_trend, show_significance, plot_kwargs, stats_loc,
+        tuple(additional_trend_methods or ()),
     )
     return ax

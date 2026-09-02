@@ -102,6 +102,7 @@ fig1, axes1 = plot_multi_analysis(
     title="CSD simulation — all methods compared",
     show_trend=True,
     show_significance=True,
+    additional_trend_methods=("linear",),
 )
 fig1.savefig("csd_basic_multi.png", dpi=150, bbox_inches="tight")
 print("\nFigure saved to csd_basic_multi.png")

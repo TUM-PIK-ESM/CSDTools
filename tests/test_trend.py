@@ -223,6 +223,29 @@ class TrendAssessmentTests(unittest.TestCase):
         plt.close(fig_analysis)
         plt.close(fig_significance)
 
+    def test_plot_can_show_an_additional_linear_assessment(self):
+        rng = np.random.default_rng(12)
+        x = rng.standard_normal(120)
+        result = analyze_timeseries(
+            x,
+            method="variance",
+            window_size=30,
+            step=5,
+            detrend=None,
+            trend_method="kendall",
+        )
+
+        fig, axes = plot_analysis(
+            x,
+            result,
+            additional_trend_methods=("linear",),
+        )
+        annotation = "\n".join(text.get_text() for text in axes[1].texts)
+        self.assertIn("Kendall τ", annotation)
+        self.assertIn("OLS slope", annotation)
+        self.assertIn("p (OLS)", annotation)
+        plt.close(fig)
+
 
 if __name__ == "__main__":
     unittest.main()

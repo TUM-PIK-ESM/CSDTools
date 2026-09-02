@@ -1179,6 +1179,7 @@ plt.show()
 | `ts_color` | Time series line colour |
 | `indicator_color` | Indicator line colour |
 | `stats_loc` | Box position: `'upper left'` / `'upper right'` / `'lower left'` / `'lower right'` |
+| `additional_trend_methods` | Extra assessments to include in the stats box, e.g. `('linear',)` |
 | `ts_kwargs` / `indicator_kwargs` | Any extra `ax.plot` keyword arguments |
 | `height_ratios` | Relative heights of the two panels |
 
@@ -1300,8 +1301,8 @@ python -m csdtools.examples.rosa_analysis
 ### All-methods comparison
 
 The multi-method plot shows the original time series (top) alongside all 11
-CSD indicators in stacked panels, each with an OLS trend line and
-annotated Kendall τ / p-value.
+CSD indicators in stacked panels. Each panel includes its OLS trend line,
+Kendall τ / p-value, and the corresponding OLS slope / p-value.
 
 ![All-methods comparison](docs/csd_basic_multi.png)
 
@@ -1324,8 +1325,8 @@ null distribution, confirming a statistically significant trend.
 
 The multivariate plot shows a 2D coupled AR(1) time series (top) alongside
 all three nD indicators — Kramers-Moyal drift Jacobian, DMD eigenvalue
-magnitude, and spatial correlation — each with an OLS trend line and
-annotated Kendall τ / p-value.
+magnitude, and spatial correlation — each with an OLS trend line, annotated
+Kendall τ / p-value, and OLS slope / p-value.
 
 ![Multivariate CSD analysis](docs/csd_multivariate.png)
 
