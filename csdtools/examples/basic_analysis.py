@@ -4,7 +4,7 @@ Basic CSD analysis example.
 Demonstrates how to:
 1. Generate a synthetic time series with decreasing restoring rate (CSD).
 2. Run the analysis with all available methods.
-3. Inspect the Kendall τ trend.
+3. Inspect Kendall τ and linear-regression trend assessments.
 4. Test statistical significance via Fourier surrogates.
 5. Visualise results with the csdtools plotting utilities.
 
@@ -54,9 +54,12 @@ methods = ["ac1", "variance", "skewness",
 
 results = {}
 
-print("=" * 60)
-print(f"{'Method':<20} {'Kendall τ':>10} {'p (Kendall)':>12}")
-print("-" * 60)
+print("=" * 92)
+print(
+    f"{'Method':<20} {'Kendall τ':>10} {'p (Kendall)':>12} "
+    f"{'OLS slope':>14} {'p (OLS)':>12}"
+)
+print("-" * 92)
 
 for m in methods:
     ws = WINDOW_SIZES.get(m, WINDOW)
@@ -67,11 +70,17 @@ for m in methods:
         detrend="running_mean",
         detrend_window=DETREND_W,
         local_detrend=True,
+        trend_methods=("kendall", "linear"),
     )
     results[m] = r
-    print(f"{m:<20} {r.trend_statistic:>+10.3f} {r.trend_p_value:>12.4f}")
+    kendall = r.trends["kendall"]
+    linear = r.trends["linear"]
+    print(
+        f"{m:<20} {kendall.statistic:>+10.3f} {kendall.p_value:>12.4f} "
+        f"{linear.statistic:>+14.4e} {linear.p_value:>12.4f}"
+    )
 
-print("=" * 60)
+print("=" * 92)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 3. Significance test for lambda_glsar
@@ -88,8 +97,9 @@ r_sig = analyze_timeseries(
     n_surrogates=500,
 )
 
-print(f"  Observed Kendall τ : {r_sig.trend_statistic:+.3f}")
-print(f"  Surrogate p-value  : {r_sig.surrogate_p_value:.4f}")
+kendall_sig = r_sig.trends["kendall"]
+print(f"  Observed Kendall τ : {kendall_sig.statistic:+.3f}")
+print(f"  Surrogate p-value  : {kendall_sig.surrogate_p_value:.4f}")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 4a. Multi-method plot: time series + all indicators stacked
@@ -102,7 +112,6 @@ fig1, axes1 = plot_multi_analysis(
     title="CSD simulation — all methods compared",
     show_trend=True,
     show_significance=True,
-    additional_trend_methods=("linear",),
 )
 fig1.savefig("csd_basic_multi.png", dpi=150, bbox_inches="tight")
 print("\nFigure saved to csd_basic_multi.png")

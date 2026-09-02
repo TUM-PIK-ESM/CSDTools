@@ -2,14 +2,14 @@
 Statistical significance testing for CSD indicator trends.
 
 A statistically significant CSD signal requires that the observed trend in
-an indicator is unlikely to have arisen from a stationary process. Trends
-can be measured with any registered correlation- or slope-based trend method.
+an indicator is unlikely to have arisen from a stationary process. Trends can
+be measured with one or more registered correlation- or slope-based methods.
 This module provides surrogate-based tests:
 
 1. Generate N Fourier phase surrogates of the observed time series.
 2. Compute the same CSD indicator on each surrogate.
-3. Compute the selected trend statistic for each surrogate indicator.
-4. Compare the observed statistic with its surrogate null distribution.
+3. Compute every selected trend statistic for each surrogate indicator.
+4. Compare each observed statistic with its surrogate null distribution.
 
 References
 ----------
@@ -20,15 +20,17 @@ Nature Communications, 14, 8344.
 https://doi.org/10.1038/s41467-023-44046-9
 """
 
-import numpy as np
-from typing import Optional, Tuple
+from typing import Dict, Optional, Sequence, Union
 
-from .surrogates import fourier_surrogates
+import numpy as np
+
 from .sliding_window import sliding_window_analysis
+from .surrogates import fourier_surrogates
 from .trend import (
     AVAILABLE_ALTERNATIVES,
-    AVAILABLE_TREND_METHODS,
+    TrendResult,
     assess_trend,
+    normalize_trend_methods,
 )
 
 
@@ -48,15 +50,15 @@ def surrogate_p_value(
         Selected trend statistic for each surrogate (null distribution).
     alternative : str
         ``'greater'`` — fraction of surrogate statistics greater than or
-        equal to the observed statistic.  Appropriate when CSD predicts an
-        increasing trend.  ``'less'`` tests for a decreasing trend and
+        equal to the observed statistic. Appropriate when CSD predicts an
+        increasing trend. ``'less'`` tests for a decreasing trend and
         ``'two-sided'`` compares absolute magnitudes.
 
     Returns
     -------
     float
-        p-value in [0, 1].  A small value (e.g., < 0.05) indicates that
-        the observed trend is unlikely under the null hypothesis.
+        P-value in [0, 1]. A small value indicates that the observed trend is
+        unlikely under the null hypothesis.
     """
     if alternative not in AVAILABLE_ALTERNATIVES:
         raise ValueError(
@@ -70,11 +72,115 @@ def surrogate_p_value(
         return np.nan
     if alternative == "greater":
         return float(np.mean(surr >= observed_statistic))
-    elif alternative == "less":
+    if alternative == "less":
         return float(np.mean(surr <= observed_statistic))
-    elif alternative == "two-sided":
-        return float(np.mean(np.abs(surr) >= np.abs(observed_statistic)))
-    raise RuntimeError("unreachable")
+    return float(np.mean(np.abs(surr) >= np.abs(observed_statistic)))
+
+
+def _analytical_trend_results(
+    indicator: np.ndarray,
+    times: np.ndarray,
+    trend_methods: Sequence[str],
+    trend_alternative: str,
+    surrogate_alternative: str,
+) -> Dict[str, TrendResult]:
+    """Assess multiple trends without a surrogate null distribution."""
+    results: Dict[str, TrendResult] = {}
+    for trend_method in trend_methods:
+        assessment = assess_trend(
+            indicator,
+            times=times,
+            method=trend_method,
+            alternative=trend_alternative,
+        )
+        results[trend_method] = TrendResult(
+            method=assessment.method,
+            statistic=assessment.statistic,
+            p_value=assessment.p_value,
+            alternative=assessment.alternative,
+            details=dict(assessment.details),
+            surrogate_p_value=None,
+            surrogate_statistics=None,
+            surrogate_alternative=surrogate_alternative,
+        )
+    return results
+
+
+def _significance_from_indicator(
+    x: np.ndarray,
+    indicator: np.ndarray,
+    times: np.ndarray,
+    method: str,
+    window_size: int,
+    step: int,
+    dt: float,
+    local_detrend: bool,
+    n_surrogates: int,
+    seed: Optional[int],
+    trend_methods: Sequence[str],
+    trend_alternative: str,
+    surrogate_alternative: str,
+    **method_kwargs,
+) -> Dict[str, TrendResult]:
+    """Build observed and surrogate results from a precomputed indicator."""
+    if n_surrogates < 1:
+        raise ValueError("n_surrogates must be at least 1.")
+
+    physical_times = np.asarray(times, dtype=float) * dt
+    observed = _analytical_trend_results(
+        indicator,
+        physical_times,
+        trend_methods,
+        trend_alternative,
+        surrogate_alternative,
+    )
+
+    surrogate_statistics = {
+        trend_method: np.empty(n_surrogates, dtype=float)
+        for trend_method in trend_methods
+    }
+    surrogates = fourier_surrogates(x, n_surrogates, seed=seed)
+
+    # The indicator is the expensive part of the surrogate pipeline. Compute
+    # it once per surrogate, then apply every requested scalar trend method.
+    for k in range(n_surrogates):
+        surrogate_indicator, surrogate_times = sliding_window_analysis(
+            surrogates[k],
+            method,
+            window_size,
+            step,
+            dt,
+            local_detrend,
+            **method_kwargs,
+        )
+        surrogate_physical_times = surrogate_times * dt
+        for trend_method in trend_methods:
+            surrogate_statistics[trend_method][k] = assess_trend(
+                surrogate_indicator,
+                times=surrogate_physical_times,
+                method=trend_method,
+                alternative=trend_alternative,
+            ).statistic
+
+    results: Dict[str, TrendResult] = {}
+    for trend_method in trend_methods:
+        assessment = observed[trend_method]
+        statistics = surrogate_statistics[trend_method]
+        results[trend_method] = TrendResult(
+            method=assessment.method,
+            statistic=assessment.statistic,
+            p_value=assessment.p_value,
+            alternative=assessment.alternative,
+            details=dict(assessment.details),
+            surrogate_p_value=surrogate_p_value(
+                assessment.statistic,
+                statistics,
+                surrogate_alternative,
+            ),
+            surrogate_statistics=statistics,
+            surrogate_alternative=surrogate_alternative,
+        )
+    return results
 
 
 def significance_test(
@@ -86,25 +192,23 @@ def significance_test(
     local_detrend: bool = True,
     n_surrogates: int = 1000,
     seed: Optional[int] = None,
-    trend_method: str = "kendall",
+    trend_methods: Union[str, Sequence[str]] = ("kendall",),
     trend_alternative: str = "two-sided",
     surrogate_alternative: str = "greater",
     **method_kwargs,
-) -> Tuple[float, float, np.ndarray]:
+) -> Dict[str, TrendResult]:
     """
-    Test the statistical significance of a CSD indicator trend.
+    Test one or more CSD indicator trend statistics with shared surrogates.
 
-    Generates ``n_surrogates`` Fourier phase surrogates, computes the same
-    sliding-window CSD indicator on each, and builds a null distribution of
-    the selected trend statistic.  The observed statistic is then compared
-    with this distribution.
+    Each surrogate indicator is computed once and then assessed with every
+    requested trend method.
 
     Parameters
     ----------
     x : np.ndarray
-        Input time series (after global preprocessing, if any).
+        Input time series after any desired global preprocessing.
     method : str
-        CSD indicator method (see :data:`~csdtools.indicators.AVAILABLE_METHODS`).
+        CSD indicator method.
     window_size : int
         Sliding window size.
     step : int
@@ -112,82 +216,72 @@ def significance_test(
     dt : float
         Physical time step.
     local_detrend : bool
-        Remove linear trend within each window.
+        Remove a linear trend within each window.
     n_surrogates : int
-        Number of surrogates.  More surrogates give a more precise p-value
-        but increase computation time linearly.  1000 is standard.
+        Number of Fourier phase surrogates.
     seed : int or None
         Random seed for reproducible surrogate generation.
-    trend_method : str
-        Registered statistic used to quantify the indicator trend. Slope
-        methods use physical window time (midpoint index × ``dt``).
+    trend_methods : str or sequence of str
+        Registered trend methods to assess. See
+        :data:`~csdtools.trend.AVAILABLE_TREND_METHODS`.
     trend_alternative : {'two-sided', 'greater', 'less'}
-        Alternative hypothesis for the analytical trend p-value.  The
-        analytical p-value itself is not returned by this function, but the
-        same setting is used consistently when assessing each trend.
+        Alternative used for analytical p-values when available.
     surrogate_alternative : {'greater', 'less', 'two-sided'}
-        Tail of the surrogate null distribution used for the p-value.
+        Tail used for every surrogate p-value.
     **method_kwargs
         Additional arguments forwarded to the indicator function.
 
     Returns
     -------
-    observed_statistic : float
-        Selected statistic of the observed indicator trend.
-    p_value : float
-        Fraction of surrogate statistics at least as extreme as observed.
-    surrogate_statistics : np.ndarray, shape (n_surrogates,)
-        Selected trend statistic for each surrogate (null distribution).
+    dict of str to TrendResult
+        One stored analytical and surrogate result per requested method.
 
     Examples
     --------
-    >>> statistic, pval, surr_statistics = significance_test(
-    ...     x_processed, method='ac1', window_size=100, n_surrogates=1000
+    >>> trends = significance_test(
+    ...     x_processed,
+    ...     method='ac1',
+    ...     window_size=100,
+    ...     n_surrogates=1000,
+    ...     trend_methods=('kendall', 'linear'),
     ... )
-    >>> print(f"statistic = {statistic:.3f},  p = {pval:.3f}")
+    >>> print(trends['linear'].statistic, trends['linear'].surrogate_p_value)
     """
-    x = np.asarray(x, dtype=float)
+    methods = normalize_trend_methods(trend_methods)
+    if trend_alternative not in AVAILABLE_ALTERNATIVES:
+        raise ValueError(
+            f"Unknown trend alternative '{trend_alternative}'. "
+            f"Choose from: {list(AVAILABLE_ALTERNATIVES)}"
+        )
     if surrogate_alternative not in AVAILABLE_ALTERNATIVES:
         raise ValueError(
             f"Unknown surrogate alternative '{surrogate_alternative}'. "
             f"Choose from: {list(AVAILABLE_ALTERNATIVES)}"
         )
-    if trend_method not in AVAILABLE_TREND_METHODS:
-        raise ValueError(
-            f"Unknown trend method '{trend_method}'. "
-            f"Choose from: {list(AVAILABLE_TREND_METHODS)}"
-        )
 
-    # Observed indicator and selected trend statistic.  Window midpoints are
-    # converted to physical time so slope statistics are not mechanically
-    # rescaled by ``step`` and are expressed per unit of ``dt``.
-    ind, times = sliding_window_analysis(
-        x, method, window_size, step, dt, local_detrend, **method_kwargs
+    x = np.asarray(x, dtype=float)
+    indicator, times = sliding_window_analysis(
+        x,
+        method,
+        window_size,
+        step,
+        dt,
+        local_detrend,
+        **method_kwargs,
     )
-    trend_times = times * dt
-    observed = assess_trend(
-        ind,
-        times=trend_times,
-        method=trend_method,
-        alternative=trend_alternative,
+    return _significance_from_indicator(
+        x,
+        indicator,
+        times,
+        method,
+        window_size,
+        step,
+        dt,
+        local_detrend,
+        n_surrogates,
+        seed,
+        methods,
+        trend_alternative,
+        surrogate_alternative,
+        **method_kwargs,
     )
-
-    # Surrogate null distribution
-    surrogates = fourier_surrogates(x, n_surrogates, seed=seed)
-    surrogate_statistics = np.empty(n_surrogates)
-    for k in range(n_surrogates):
-        s_ind, s_times = sliding_window_analysis(
-            surrogates[k], method, window_size, step, dt, local_detrend,
-            **method_kwargs
-        )
-        surrogate_statistics[k] = assess_trend(
-            s_ind,
-            times=s_times * dt,
-            method=trend_method,
-            alternative=trend_alternative,
-        ).statistic
-
-    p_val = surrogate_p_value(
-        observed.statistic, surrogate_statistics, surrogate_alternative
-    )
-    return observed.statistic, p_val, surrogate_statistics

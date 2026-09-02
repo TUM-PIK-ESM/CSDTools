@@ -1,9 +1,9 @@
 """
 Kendall-versus-linear trend assessment example.
 
-Runs the same CSD indicator analysis twice: once using Kendall's tau and once
-using an ordinary least-squares slope.  Each selected statistic is also tested
-against its own Fourier-surrogate null distribution.
+Runs one CSD indicator analysis with both Kendall's tau and an ordinary
+least-squares slope. Each statistic is tested against its own null distribution
+while sharing the expensive surrogate-indicator computation.
 
 Run from the repository root::
 
@@ -13,7 +13,7 @@ Run from the repository root::
 import matplotlib.pyplot as plt
 import numpy as np
 
-from csdtools import analyze_timeseries, plot_multi_analysis, plot_significance
+from csdtools import analyze_timeseries, plot_analysis, plot_significance
 
 
 # 1. Synthetic CSD data: AR(1) persistence increases toward one.
@@ -37,43 +37,37 @@ common = dict(
     surrogate_seed=42,
 )
 
-print("Running Kendall and linear surrogate significance tests …")
-r_kendall = analyze_timeseries(
+print("Running shared Kendall and linear surrogate significance tests …")
+result = analyze_timeseries(
     x,
-    trend_method="kendall",
-    trend_alternative="two-sided",
-    **common,
-)
-r_linear = analyze_timeseries(
-    x,
-    trend_method="linear",
+    trend_methods=("kendall", "linear"),
     trend_alternative="two-sided",
     **common,
 )
 
+kendall = result.trends["kendall"]
+linear = result.trends["linear"]
+
 print(
-    f"Kendall: tau={r_kendall.trend_statistic:+.3f}, "
-    f"analytical p={r_kendall.trend_p_value:.4g}, "
-    f"surrogate p={r_kendall.surrogate_p_value:.4f}"
+    f"Kendall: tau={kendall.statistic:+.3f}, "
+    f"analytical p={kendall.p_value:.4g}, "
+    f"surrogate p={kendall.surrogate_p_value:.4f}"
 )
 print(
-    f"Linear : slope={r_linear.trend_statistic:+.4e} per sample, "
-    f"R^2={r_linear.trend_details['r_squared']:.3f}, "
-    f"analytical p={r_linear.trend_p_value:.4g}, "
-    f"surrogate p={r_linear.surrogate_p_value:.4f}"
+    f"Linear : slope={linear.statistic:+.4e} per sample, "
+    f"R^2={linear.details['r_squared']:.3f}, "
+    f"analytical p={linear.p_value:.4g}, "
+    f"surrogate p={linear.surrogate_p_value:.4f}"
 )
 
 
-# 3. The indicator is identical; its annotation reflects the selected trend.
-fig1, _ = plot_multi_analysis(
+# 3. The one indicator panel displays both stored assessments.
+fig1, _ = plot_analysis(
     x,
-    {
-        "lambda (Kendall trend)": r_kendall,
-        "lambda (linear trend)": r_linear,
-    },
+    result,
     x_label="Sample index",
     ts_label="x(t)",
-    title="One CSD indicator, two trend assessments",
+    title="One CSD indicator with two stored trend assessments",
     show_trend=True,
     show_significance=True,
 )
@@ -86,12 +80,14 @@ fig2, (ax_k, ax_l) = plt.subplots(
     1, 2, figsize=(13, 4), constrained_layout=True
 )
 plot_significance(
-    r_kendall,
+    result,
+    trend_method="kendall",
     ax=ax_k,
     title="Kendall tau surrogate null distribution",
 )
 plot_significance(
-    r_linear,
+    result,
+    trend_method="linear",
     ax=ax_l,
     title="OLS-slope surrogate null distribution",
 )

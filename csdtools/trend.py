@@ -10,7 +10,7 @@ distribution.
 from __future__ import annotations
 
 import dataclasses
-from typing import Callable, Dict, Mapping, Optional, Tuple
+from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -27,6 +27,15 @@ class TrendAssessment:
     p_value: Optional[float]
     alternative: str
     details: Mapping[str, float] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass(frozen=True)
+class TrendResult(TrendAssessment):
+    """Stored analytical and optional surrogate result for one trend method."""
+
+    surrogate_p_value: Optional[float] = None
+    surrogate_statistics: Optional[np.ndarray] = None
+    surrogate_alternative: str = "greater"
 
 
 TrendAssessor = Callable[[np.ndarray, np.ndarray, str], TrendAssessment]
@@ -247,6 +256,27 @@ def _method_spec(method: str) -> TrendMethodSpec:
             f"Unknown trend method '{method}'. "
             f"Choose from: {list(AVAILABLE_TREND_METHODS)}"
         ) from exc
+
+
+def normalize_trend_methods(
+    trend_methods: Union[str, Sequence[str]],
+) -> Tuple[str, ...]:
+    """Validate trend methods and return a non-empty, ordered tuple."""
+    if isinstance(trend_methods, str):
+        methods = (trend_methods,)
+    else:
+        methods = tuple(trend_methods)
+
+    if not methods:
+        raise ValueError("trend_methods must contain at least one method.")
+    if len(set(methods)) != len(methods):
+        raise ValueError(
+            "trend_methods must not contain duplicates; "
+            f"got {list(methods)}."
+        )
+    for method in methods:
+        _method_spec(method)
+    return methods
 
 
 def trend_statistic_label(method: str) -> str:

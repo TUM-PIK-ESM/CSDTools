@@ -6,7 +6,7 @@ Three main functions are provided:
 plot_analysis(x, result, ...)
     Two-panel figure: the raw (or preprocessed) time series in the top
     panel and a single CSD indicator below it. A fitted trend line and
-    selected trend statistic / p-value annotation can be overlaid on the
+    stored trend statistic / p-value annotations can be overlaid on the
     indicator panel.
 
 plot_multi_analysis(x, results, ...)
@@ -27,10 +27,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 from matplotlib.gridspec import GridSpec
-from typing import Optional, Dict, List, Sequence, Tuple, Union
+from typing import Optional, Dict, Tuple, Union
 
 from .trend import (
-    assess_trend,
     fitted_trend_line,
     format_trend_details,
     format_trend_statistic,
@@ -71,24 +70,37 @@ _SURR_EDGE    = "#78909C"   # darker grey — surrogate histogram edge
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _trend_line(result) -> Tuple[np.ndarray, str]:
-    """Selected fit or visual guide, evaluated at all window times."""
+def _resolve_trend_method(result, trend_method: Optional[str]) -> str:
+    """Resolve an explicit method or select a useful stored default."""
+    if trend_method is not None:
+        if trend_method not in result.trends:
+            raise ValueError(
+                f"Trend method '{trend_method}' is not stored in this result. "
+                f"Available methods: {list(result.trends)}"
+            )
+        return trend_method
+
+    # Prefer the first stored slope fit. If every stored assessment is a
+    # correlation, its registered OLS visual guide remains the default.
+    for method, trend in result.trends.items():
+        intercept = trend.details.get("intercept")
+        if intercept is not None and np.isfinite(intercept):
+            return method
+    return next(iter(result.trends))
+
+
+def _trend_line(
+    result, trend_method: Optional[str]
+) -> Tuple[np.ndarray, str]:
+    """Stored fit or visual guide, evaluated at all window times."""
+    method = _resolve_trend_method(result, trend_method)
+    trend = result.trends[method]
     return fitted_trend_line(
         result.indicator,
         np.asarray(result.times, dtype=float) * result.dt,
-        result.trend_method,
-        result.trend_statistic,
-        result.trend_details,
-    )
-
-
-def _trend_values(result):
-    """Return the selected method, statistic, p-value, and surrogates."""
-    return (
-        result.trend_method,
-        result.trend_statistic,
-        result.trend_p_value,
-        result.surrogate_statistics,
+        method,
+        trend.statistic,
+        trend.details,
     )
 
 
@@ -130,57 +142,45 @@ def _annotate_stats(
     ax: plt.Axes,
     result,
     loc: str = "upper left",
-    additional_trend_methods: Sequence[str] = (),
 ) -> None:
     """
-    Place a stats box with the selected trend statistic and p-values.
+    Place a stats box with all stored trend statistics and p-values.
 
     Parameters
     ----------
     ax : plt.Axes
     result : CSDResult
-        Analysis result containing the selected trend assessment.
+        Analysis result containing one or more stored trend assessments.
     loc : str
         'upper left', 'upper right', 'lower left', or 'lower right'.
-    additional_trend_methods : sequence of str
-        Further registered trend assessments to compute and show below the
-        selected assessment.
     """
-    method, statistic, p_value, _ = _trend_values(result)
-    surrogate_p = result.surrogate_p_value
-    stars = _significance_stars(
-        surrogate_p if surrogate_p is not None else p_value
-    )
-    label = trend_statistic_label(method)
-    lines = [f"{label} = {format_trend_statistic(method, statistic)}  {stars}"]
-    p_label = trend_analytical_test_label(method)
-    if p_value is not None and np.isfinite(p_value):
-        lines.append(f"p ({p_label}) = {p_value:.4f}")
-    if surrogate_p is not None and np.isfinite(surrogate_p):
-        lines.append(f"p (surrogate) = {surrogate_p:.4f}")
-    lines.extend(format_trend_details(method, result.trend_details))
-
-    trend_times = np.asarray(result.times, dtype=float) * result.dt
-    shown_methods = {method}
-    for additional_method in additional_trend_methods:
-        if additional_method in shown_methods:
-            continue
-        shown_methods.add(additional_method)
-        additional = assess_trend(
-            result.indicator,
-            times=trend_times,
-            method=additional_method,
-            alternative=result.trend_alternative,
+    lines = []
+    for method, trend in result.trends.items():
+        stars = _significance_stars(
+            trend.surrogate_p_value
+            if trend.surrogate_p_value is not None
+            else trend.p_value
         )
         lines.append(
-            f"{trend_statistic_label(additional_method)} = "
-            f"{format_trend_statistic(additional_method, additional.statistic)}"
+            f"{trend_statistic_label(method)} = "
+            f"{format_trend_statistic(method, trend.statistic)}  {stars}"
         )
-        additional_p_label = trend_analytical_test_label(additional_method)
-        if additional.p_value is not None and np.isfinite(additional.p_value):
+        p_label = trend_analytical_test_label(method)
+        if trend.p_value is not None and np.isfinite(trend.p_value):
+            lines.append(f"p ({p_label}) = {trend.p_value:.4f}")
+        if (
+            trend.surrogate_p_value is not None
+            and np.isfinite(trend.surrogate_p_value)
+        ):
+            surrogate_label = "surrogate"
+            if len(result.trends) > 1:
+                method_label = p_label or trend_statistic_label(method)
+                surrogate_label = f"{method_label} surrogate"
             lines.append(
-                f"p ({additional_p_label}) = {additional.p_value:.4f}"
+                f"p ({surrogate_label}) = "
+                f"{trend.surrogate_p_value:.4f}"
             )
+        lines.extend(format_trend_details(method, trend.details))
 
     x_pos = 0.02 if "left" in loc else 0.98
     y_pos = 0.97 if "upper" in loc else 0.03
@@ -209,7 +209,7 @@ def _draw_indicator_panel(
     show_significance: bool,
     indicator_kwargs: dict,
     stats_loc: str,
-    additional_trend_methods: Sequence[str],
+    trend_line_method: Optional[str],
 ) -> None:
     """
     Render the indicator line, optional trend, and optional stats box
@@ -223,7 +223,7 @@ def _draw_indicator_panel(
 
     # Method-specific fit or visual trend guide
     if show_trend:
-        trend, trend_label = _trend_line(result)
+        trend, trend_label = _trend_line(result, trend_line_method)
         ax.plot(t, trend, color=_TREND_COLOR, lw=1.8, ls="--",
                 label=trend_label, zorder=5)
 
@@ -236,7 +236,6 @@ def _draw_indicator_panel(
             ax,
             result,
             loc=stats_loc,
-            additional_trend_methods=additional_trend_methods,
         )
 
     ax.tick_params(labelsize=8)
@@ -263,7 +262,7 @@ def plot_analysis(
     ts_kwargs: Optional[dict] = None,
     indicator_kwargs: Optional[dict] = None,
     height_ratios: Tuple[float, float] = (1.8, 2.2),
-    additional_trend_methods: Optional[Sequence[str]] = None,
+    trend_line_method: Optional[str] = None,
 ) -> Tuple[plt.Figure, np.ndarray]:
     """
     Two-panel figure: time series (top) + CSD indicator (bottom).
@@ -288,7 +287,7 @@ def plot_analysis(
     show_trend : bool
         Overlay the selected fit or visual trend guide on the indicator.
     show_significance : bool
-        Add a stats box with the selected trend statistic and p-values.
+        Add a stats box with all stored trend statistics and p-values.
     ts_color : str or None
         Line colour for the time series.  Defaults to dark blue-grey.
     indicator_color : str or None
@@ -303,10 +302,10 @@ def plot_analysis(
         Extra keyword arguments forwarded to ``ax.plot`` for the indicator.
     height_ratios : (float, float)
         Relative heights of the time series and indicator panels.
-    additional_trend_methods : sequence of str or None
-        Additional registered trend assessments to show in the stats box.
-        They are computed from the existing indicator values; duplicates of
-        ``result.trend_method`` are ignored.
+    trend_line_method : str or None
+        Stored trend method whose fit is drawn. By default, the first stored
+        slope method is preferred, otherwise the first stored correlation's
+        OLS visual guide is used.
 
     Returns
     -------
@@ -354,8 +353,7 @@ def plot_analysis(
     # --- Indicator panel ---
     _draw_indicator_panel(
         ax_ind, result, t_ind, ic,
-        show_trend, show_significance, ind_kw, stats_loc,
-        tuple(additional_trend_methods or ()),
+        show_trend, show_significance, ind_kw, stats_loc, trend_line_method,
     )
     ax_ind.set_xlabel(x_label, fontsize=9)
 
@@ -379,7 +377,7 @@ def plot_multi_analysis(
     ts_color: Optional[str] = None,
     ts_kwargs: Optional[dict] = None,
     indicator_kwargs: Optional[dict] = None,
-    additional_trend_methods: Optional[Sequence[str]] = None,
+    trend_line_method: Optional[str] = None,
 ) -> Tuple[plt.Figure, np.ndarray]:
     """
     Stacked figure: time series (top) + one panel per CSD indicator.
@@ -413,8 +411,8 @@ def plot_multi_analysis(
         Extra kwargs for the time series line.
     indicator_kwargs : dict or None
         Extra kwargs for every indicator line.
-    additional_trend_methods : sequence of str or None
-        Additional registered trend assessments to show in every stats box.
+    trend_line_method : str or None
+        Stored trend method whose fit is drawn in every indicator panel.
 
     Returns
     -------
@@ -480,7 +478,7 @@ def plot_multi_analysis(
         _draw_indicator_panel(
             ax, result, t_ind, color,
             show_trend, show_significance, ind_kw, stats_loc,
-            tuple(additional_trend_methods or ()),
+            trend_line_method,
         )
 
         # Use the dict key as the y-label when it differs from the method name
@@ -502,6 +500,7 @@ def plot_multi_analysis(
 
 def plot_significance(
     result,
+    trend_method: Optional[str] = None,
     figsize: Tuple[float, float] = (7, 4),
     title: Optional[str] = None,
     bins: int = 40,
@@ -513,17 +512,20 @@ def plot_significance(
     Histogram of the Fourier surrogate null distribution of a trend statistic.
 
     The observed trend statistic is marked with a vertical line. The
-    rejection tail(s) follow ``result.surrogate_alternative`` and the
-    surrogate p-value is shown in a stats box.
+    rejection tail(s) follow the stored trend result's surrogate alternative
+    and the surrogate p-value is shown in a stats box.
 
     Requires ``significance=True`` to have been passed to
     :func:`~csdtools.analyze_timeseries`, which stores the null distribution
-    in ``result.surrogate_statistics``.
+    in ``result.trends``.
 
     Parameters
     ----------
     result : CSDResult
-        Result with ``surrogate_statistics`` populated.
+        Result with a surrogate distribution stored for the selected method.
+    trend_method : str or None
+        Stored method to plot. This may be omitted when the result contains
+        exactly one trend method; otherwise it is required.
     figsize : (float, float)
         Figure size (used only when ``ax`` is None).
     title : str or None
@@ -545,7 +547,7 @@ def plot_significance(
     Raises
     ------
     ValueError
-        If the surrogate statistics are unavailable.
+        If the trend method is ambiguous, unavailable, or has no surrogates.
 
     Examples
     --------
@@ -554,11 +556,26 @@ def plot_significance(
     >>> fig, ax = plot_significance(result)
     >>> plt.show()
     """
-    trend_method, observed, _, surrogate_statistics = _trend_values(result)
+    if trend_method is None:
+        if len(result.trends) != 1:
+            raise ValueError(
+                "result contains multiple trend methods. Pass trend_method="
+                f" explicitly; choose from {list(result.trends)}."
+            )
+        trend_method = next(iter(result.trends))
+    elif trend_method not in result.trends:
+        raise ValueError(
+            f"Trend method '{trend_method}' is not stored in this result. "
+            f"Available methods: {list(result.trends)}"
+        )
+
+    trend = result.trends[trend_method]
+    observed = trend.statistic
+    surrogate_statistics = trend.surrogate_statistics
     if surrogate_statistics is None:
         raise ValueError(
-            "result.surrogate_statistics is None.  Re-run analyze_timeseries() "
-            "with significance=True to compute the surrogate null distribution."
+            f"result.trends['{trend_method}'].surrogate_statistics is None. "
+            "Re-run analyze_timeseries() with significance=True."
         )
 
     surr = np.asarray(surrogate_statistics, dtype=float)
@@ -584,7 +601,7 @@ def plot_significance(
     # Shade the rejection tail(s) selected for the surrogate test.
     counts, edges = np.histogram(surr, bins=bins)
     centers = (edges[:-1] + edges[1:]) / 2.0
-    alternative = result.surrogate_alternative
+    alternative = trend.surrogate_alternative
     if alternative == "greater":
         tail_mask = centers >= observed
         tail_label = "Upper-tail region"
@@ -623,10 +640,10 @@ def plot_significance(
     )
 
     # Stats annotation
-    stars = _significance_stars(result.surrogate_p_value)
+    stars = _significance_stars(trend.surrogate_p_value)
     p_str = (
-        f"p = {result.surrogate_p_value:.4f}  {stars}"
-        if result.surrogate_p_value is not None
+        f"p = {trend.surrogate_p_value:.4f}  {stars}"
+        if trend.surrogate_p_value is not None
         else "p = n/a"
     )
     ax.text(
@@ -658,7 +675,7 @@ def plot_indicator_on_ax(
     show_significance: bool = True,
     color: Optional[str] = None,
     stats_loc: str = "upper left",
-    additional_trend_methods: Optional[Sequence[str]] = None,
+    trend_line_method: Optional[str] = None,
     **plot_kwargs,
 ) -> plt.Axes:
     """
@@ -682,8 +699,8 @@ def plot_indicator_on_ax(
         Indicator line colour.
     stats_loc : str
         Position of the stats box.
-    additional_trend_methods : sequence of str or None
-        Additional registered trend assessments to show in the stats box.
+    trend_line_method : str or None
+        Stored trend method whose fit is drawn.
     **plot_kwargs
         Extra kwargs for the indicator ``ax.plot`` call.
 
@@ -709,6 +726,6 @@ def plot_indicator_on_ax(
     _draw_indicator_panel(
         ax, result, t_ind, c,
         show_trend, show_significance, plot_kwargs, stats_loc,
-        tuple(additional_trend_methods or ()),
+        trend_line_method,
     )
     return ax

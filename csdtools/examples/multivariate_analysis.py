@@ -71,11 +71,15 @@ common = dict(
     detrend="running_mean",
     detrend_window=DETREND_W,
     local_detrend=True,
+    trend_methods=("kendall", "linear"),
 )
 
 print("Running multivariate CSD analysis …\n")
-print(f"{'Method':<15} {'Kendall τ':>10} {'p (Kendall)':>12}")
-print("-" * 40)
+print(
+    f"{'Method':<15} {'Kendall τ':>10} {'p (Kendall)':>12} "
+    f"{'OLS slope':>14} {'p (OLS)':>12}"
+)
+print("-" * 87)
 
 r_km = analyze_timeseries(x, method="lambda_km",  **common)
 r_dmd = analyze_timeseries(x, method="lambda_dmd", embedding_dim=3, **common)
@@ -86,9 +90,14 @@ r_sc  = analyze_timeseries(
 results = {"lambda_km": r_km, "lambda_dmd": r_dmd, "spatial_corr": r_sc}
 
 for name, r in results.items():
-    print(f"{name:<15} {r.trend_statistic:>+10.3f} {r.trend_p_value:>12.4f}")
+    kendall = r.trends["kendall"]
+    linear = r.trends["linear"]
+    print(
+        f"{name:<15} {kendall.statistic:>+10.3f} {kendall.p_value:>12.4f} "
+        f"{linear.statistic:>+14.4e} {linear.p_value:>12.4f}"
+    )
 
-print("-" * 40)
+print("-" * 87)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 4. Plot: 2D time series + all three indicators
@@ -129,7 +138,6 @@ for ax, (r, color, ylabel) in zip(axes[1:], indicator_cfg):
         show_significance=True,
         color=color,
         stats_loc="upper left",
-        additional_trend_methods=("linear",),
     )
     ax.set_ylabel(ylabel, fontsize=8)
 
