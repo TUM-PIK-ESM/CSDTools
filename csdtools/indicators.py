@@ -356,6 +356,15 @@ def estimate_lambda_glsar(
     float
         Continuous-time restoring rate λ (negative for stable systems).
 
+    Notes
+    -----
+    Two parameters are estimated here, not one: alongside the system's
+    restoring rate λ, the AR(1) noise model captures a second rate, the
+    restoring rate of the red-noise forcing. Only λ is used for the CSD
+    analysis. The two are told apart by assuming the noise has a shorter
+    memory (decays faster) than the tipping element's own dynamics, so the
+    slower rate is attributed to the system and the faster one to the noise.
+
     References
     ----------
     Boers, N. (2021). Observation-based early-warning signals for a collapse
@@ -581,6 +590,15 @@ def estimate_lambda_acs(
     float
         Continuous-time restoring rate λ (negative for stable systems).
 
+    Notes
+    -----
+    Two rates are estimated here, not one: the two-mode fit yields both λ and
+    θ, but only the dominant rate min(λ, θ) is used for the CSD analysis. The
+    other rate is the restoring rate of the red-noise forcing. The two are
+    told apart by assuming the noise has a shorter memory (decays faster) than
+    the tipping element's own dynamics, so the slower mode is attributed to the
+    system and the faster one to the noise.
+
     References
     ----------
     Morr, A. & Boers, N. (2024). Physical Review X, 14, 021037.
@@ -664,6 +682,15 @@ def estimate_lambda_psd(
     -------
     float
         Continuous-time restoring rate λ (negative for stable systems).
+
+    Notes
+    -----
+    Two rates are estimated here, not one: the two-mode PSD fit yields both λ
+    and θ, but only the dominant rate min(λ, θ) is used for the CSD analysis.
+    The other rate is the restoring rate of the red-noise forcing. The two are
+    told apart by assuming the noise has a shorter memory (decays faster) than
+    the tipping element's own dynamics, so the slower mode is attributed to the
+    system and the faster one to the noise.
 
     References
     ----------
