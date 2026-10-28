@@ -233,6 +233,13 @@ The key advantage of GLS over plain OLS is that it accounts for the fact
 that the regression residuals ε(t) are themselves autocorrelated.  Ignoring
 this leads to a downward bias in φ.
 
+**Two-rate estimation**: Alongside the system's restoring rate λ, the AR(1)
+noise model captures the restoring rate of the red-noise forcing. Only λ is
+used for the CSD analysis. The two rates are distinguished by assuming that
+the noise has a shorter memory (decays faster) than the tipping element's
+own dynamics: the slower rate is attributed to the system and the faster
+one to the noise.
+
 **Pros**: Accurate, well-established in the CSD literature.  
 **Cons**: Slightly slower than OLS; requires ≥ 30 samples per window.
 
@@ -275,6 +282,13 @@ this to multiple observed lags simultaneously gives a robust estimate of λ.
 
 The number of lags used is controlled by the `max_lag` parameter.
 
+**Two-rate estimation**: The two-mode fit estimates both λ and θ, but only
+the dominant rate `min(λ, θ)` is used for the CSD analysis. The other rate is
+the restoring rate of the red-noise forcing. The two rates are distinguished
+by assuming that the noise has a shorter memory (decays faster) than the
+tipping element's own dynamics: the slower mode is attributed to the system
+and the faster one to the noise.
+
 **Pros**: Uses more information (multiple lags) than a single-lag estimator;
 robust to moderate noise.  
 **Cons**: Requires solving a nonlinear optimisation; ≥ 300 samples recommended.
@@ -296,6 +310,13 @@ Fits a two-mode discrete-time PSD model to the band-averaged log-periodogram.
 The theoretical spectrum has poles at exp(−λ) and exp(−θ); the dominant
 (smallest) rate is returned as the restoring-rate estimate.  Band averaging
 with 10 bins per band is applied before fitting to reduce periodogram noise.
+
+**Two-rate estimation**: The two-mode PSD fit estimates both λ and θ, but
+only the dominant rate `min(λ, θ)` is used for the CSD analysis. The other
+rate is the restoring rate of the red-noise forcing. The two rates are
+distinguished by assuming that the noise has a shorter memory (decays
+faster) than the tipping element's own dynamics: the slower mode is
+attributed to the system and the faster one to the noise.
 
 **Pros**: Uses all available frequency information; independent of
 time-domain autocorrelation estimates.
