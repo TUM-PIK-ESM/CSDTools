@@ -91,7 +91,7 @@ from .trend import (
 from ._utils import strip_nans
 from .plotting import plot_analysis, plot_multi_analysis, plot_significance
 
-__version__ = "1.1.0"   # preliminary bump; subject to change before the 1.1 release
+__version__ = "1.1.1"
 __author__ = "CSDTools contributors"
 
 __all__ = [
